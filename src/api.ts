@@ -1,0 +1,212 @@
+import { z } from "zod";
+
+export const MAP_SOURCES = {
+  food: {
+    name: "友善食光",
+    projectCode: "202106302",
+    url: "https://foodmap.family.com.tw/",
+  },
+  treasure: {
+    name: "挖寶專區",
+    projectCode: "202208202",
+    url: "https://dz5iap6aj0of3.cloudfront.net/",
+  },
+} as const;
+
+export type MapSource = keyof typeof MAP_SOURCES;
+export const SOURCE_IDS: readonly MapSource[] = ["food", "treasure"];
+
+export interface Coordinates {
+  latitude: number;
+  longitude: number;
+}
+
+const quantitySchema = z.number().int().nonnegative().nullish();
+const productSchema = z.object({
+  name: z.string().trim().min(1),
+  qty: quantitySchema,
+});
+const categorySchema = z.object({
+  name: z.string().trim().min(1),
+  products: z.array(productSchema),
+});
+const storeSchema = z.object({
+  oldPKey: z.string().regex(/^\d{1,12}$/),
+  name: z.string().trim().min(1),
+  address: z.string().nullish(),
+  latitude: z.number().finite().min(-90).max(90),
+  longitude: z.number().finite().min(-180).max(180),
+  distance: z.number().finite().nonnegative().nullish(),
+  updateDate: z
+    .string()
+    .refine((value) => Number.isFinite(Date.parse(value)))
+    .nullish(),
+  info: z.array(
+    z.object({
+      name: z.string().trim().min(1),
+      categories: z.array(categorySchema),
+    }),
+  ),
+});
+
+export type OfficialStore = z.infer<typeof storeSchema>;
+
+export class MapApiError extends Error {
+  constructor(
+    public readonly kind: "http" | "network" | "response" | "service",
+    message: string,
+    cause?: unknown,
+  ) {
+    super(message, { cause });
+    this.name = "MapApiError";
+  }
+}
+
+export function parseMapResponse(value: unknown): OfficialStore[] {
+  const envelope = z
+    .object({ code: z.number(), data: z.unknown().optional() })
+    .safeParse(value);
+
+  if (!envelope.success) {
+    throw new MapApiError(
+      "response",
+      "官方地圖回傳格式已變更，無法安全顯示資料。請改至官方地圖查看。",
+      envelope.error,
+    );
+  }
+  if (envelope.data.code !== 1) {
+    throw new MapApiError(
+      "service",
+      `官方地圖回報錯誤（代碼 ${envelope.data.code}）。請稍後重試。`,
+    );
+  }
+
+  const stores = z.array(storeSchema).safeParse(envelope.data.data);
+  if (!stores.success) {
+    throw new MapApiError(
+      "response",
+      "官方地圖回傳格式已變更，無法安全顯示資料。請改至官方地圖查看。",
+      stores.error,
+    );
+  }
+
+  const codes = new Set<string>();
+  for (const store of stores.data) {
+    if (codes.has(store.oldPKey)) {
+      throw new MapApiError(
+        "response",
+        "官方地圖回傳重複的店代碼，無法安全顯示資料。請稍後重試。",
+      );
+    }
+    codes.add(store.oldPKey);
+  }
+
+  return stores.data;
+}
+
+export const CACHE_DURATION_MS = 5 * 60_000;
+const API_URL = "https://stamp.family.com.tw/api/maps/MapProductInfo";
+
+export interface MapResult {
+  stores: OfficialStore[];
+  fetchedAt: number;
+  fromCache: boolean;
+}
+
+export interface MapQuery {
+  source: MapSource;
+  position: Coordinates;
+  favoriteCodes: readonly string[];
+  signal?: AbortSignal;
+  force?: boolean;
+}
+
+export interface MapDataClient {
+  load(query: MapQuery): Promise<MapResult>;
+}
+
+export class MapClient implements MapDataClient {
+  private readonly cache = new Map<
+    string,
+    { stores: OfficialStore[]; fetchedAt: number }
+  >();
+
+  constructor(
+    private readonly request: typeof fetch = (...args) => fetch(...args),
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  async load({
+    source,
+    position,
+    favoriteCodes,
+    signal,
+    force = false,
+  }: MapQuery): Promise<MapResult> {
+    const latitude = Number(position.latitude.toFixed(4));
+    const longitude = Number(position.longitude.toFixed(4));
+    const codes = [...new Set(favoriteCodes)].sort();
+    const key = JSON.stringify([source, latitude, longitude, codes]);
+    const cached = this.cache.get(key);
+    if (
+      !force &&
+      cached &&
+      this.now() - cached.fetchedAt < CACHE_DURATION_MS
+    ) {
+      return { ...cached, fromCache: true };
+    }
+
+    let response: Response;
+    try {
+      response = await this.request(API_URL, {
+        method: "POST",
+        mode: "cors",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ProjectCode: MAP_SOURCES[source].projectCode,
+          OldPKeys: codes,
+          PostInfo: "",
+          Latitude: latitude,
+          Longitude: longitude,
+        }),
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new MapApiError(
+        "network",
+        "無法連線到官方地圖（網路或跨網域存取可能受阻）。請稍後重試。",
+        error,
+      );
+    }
+
+    if (!response.ok) {
+      throw new MapApiError(
+        "http",
+        `官方地圖暫時無法回應（HTTP ${response.status}）。請稍後重試。`,
+      );
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new MapApiError(
+        "response",
+        "官方地圖未回傳可讀取的 JSON，無法顯示商品。請稍後重試。",
+        error,
+      );
+    }
+
+    const result = {
+      stores: parseMapResponse(payload),
+      fetchedAt: this.now(),
+    };
+    this.cache.set(key, result);
+    return { ...result, fromCache: false };
+  }
+}
