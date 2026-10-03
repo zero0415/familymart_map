@@ -80,6 +80,40 @@ describe("MapClient", () => {
     expect(request).toHaveBeenCalledTimes(3);
   });
 
+  it("queries a three-digit postal area with PostInfo, no coordinates or store keys, and a separate cache entry", async () => {
+    const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ code: 1, data: [makeStore()] }), { status: 200 }),
+    );
+    const client = new MapClient(request);
+
+    await client.load(query);
+    const postal = await client.load({
+      source: "treasure",
+      postalCode: "100",
+      favoriteCodes: [],
+    });
+    expect(postal.stores).toHaveLength(1);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(request.mock.calls[1][1]!.body as string)).toEqual({
+      ProjectCode: "202208202",
+      OldPKeys: [],
+      PostInfo: "100",
+      Latitude: 0,
+      Longitude: 0,
+    });
+    expect((await client.load({
+      source: "treasure",
+      postalCode: "100",
+      favoriteCodes: [],
+    })).fromCache).toBe(true);
+    await expect(client.load({
+      source: "treasure",
+      postalCode: "10a",
+      favoriteCodes: [],
+    })).rejects.toThrow(/郵遞區號須為 3 位數/);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it("surfaces HTTP, invalid JSON, and network failures distinctly", async () => {
     const httpClient = new MapClient(async () => new Response("", { status: 503 }));
     await expect(httpClient.load(query)).rejects.toThrow(/HTTP 503/);

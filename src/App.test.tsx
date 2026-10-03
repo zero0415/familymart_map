@@ -163,6 +163,146 @@ describe("interactive store finder", () => {
     expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toHaveLength(1);
   });
 
+  it("explains why name-only search needs an area, then searches postal map data and saves a match", async () => {
+    const client = fixtureClient();
+    act(() => render(<App client={client} geolocation={null} />, root));
+
+    setInput("#store-search", "台鐵西");
+    submit("#store-search");
+    expect(root.textContent).toContain("請先選擇附近位置，或填三位數郵遞區號");
+    expect(document.activeElement).toBe(root.querySelector("#postal-code"));
+    expect(client.load).not.toHaveBeenCalled();
+
+    setInput("#postal-code", "100");
+    submit("#store-search");
+    await settleQueries();
+
+    expect(client.load).toHaveBeenCalledTimes(2);
+    expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
+      source: "treasure",
+      postalCode: "100",
+      favoriteCodes: [],
+    }));
+    expect(root.querySelector("#nearby-title")?.textContent).toContain("分店搜尋結果");
+    expect(root.querySelector("#nearby .store-card")?.textContent).toContain("全家台鐵西店");
+    expect(root.querySelector(".search-preview")?.textContent).toContain("已載入清單符合 1 間分店");
+
+    const preview = root.querySelector<HTMLButtonElement>(".search-preview li button")!;
+    act(() => preview.click());
+    await settleQueries();
+
+    expect(client.load).toHaveBeenCalledTimes(4);
+    expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
+      position: { latitude: 25.0479, longitude: 121.5171 },
+      favoriteCodes: ["018558"],
+    }));
+    expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
+      source: "treasure",
+      postalCode: "100",
+      favoriteCodes: [],
+    }));
+    expect(root.querySelector("#favorites .store-card")?.textContent).toContain("惜—北海道玉米濃湯洋芋片");
+    expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toEqual([
+      expect.objectContaining({ code: "018558" }),
+    ]);
+  });
+
+  it("submits a name search within a loaded area and presents matching stores next to the field", async () => {
+    const client = fixtureClient();
+    act(() => render(<App client={client} geolocation={null} />, root));
+    setInput("#area", "taipei");
+    submit("#area");
+    await settleQueries();
+
+    setInput("#store-search", "台鐵西");
+    submit("#store-search");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(root.querySelector(".search-preview")?.textContent).toContain("全家台鐵西店");
+    expect(root.querySelector(".name-search [role='status']")?.textContent)
+      .toContain("已載入清單符合 1 間店");
+    expect(document.activeElement).toBe(root.querySelector("#nearby-title"));
+    expect(client.load).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an out-of-area favorite separate from postal search results", async () => {
+    window.localStorage.setItem(
+      FAVORITES_KEY,
+      JSON.stringify([{ code: "999999", name: "全家舊收藏" }]),
+    );
+    const client: MapDataClient = {
+      load: vi.fn(async ({ source, favoriteCodes }: MapQuery): Promise<MapResult> => ({
+        stores: source !== "treasure"
+          ? []
+          : favoriteCodes.length > 0
+            ? [makeStore({ oldPKey: "999999", name: "全家舊收藏", address: "高雄市三民區", latitude: 22.63 })]
+            : [makeStore()],
+        fetchedAt: Date.now(),
+        fromCache: false,
+      })),
+    };
+    act(() => render(<App client={client} geolocation={null} />, root));
+    setInput("#postal-code", "100");
+    submit("#store-search");
+    await settleQueries();
+
+    expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
+      postalCode: "100",
+      favoriteCodes: [],
+    }));
+    expect(root.querySelector("#nearby")?.textContent).toContain("全家台鐵西店");
+    expect(root.querySelector("#nearby")?.textContent).not.toContain("全家舊收藏");
+    expect(root.querySelector("#favorites")?.textContent).toContain("全家舊收藏");
+    expect(root.querySelector("#favorites")?.textContent).toContain("惜—北海道玉米濃湯洋芋片");
+  });
+
+  it("validates postal input and distinguishes empty results from API failures", async () => {
+    const client: MapDataClient = {
+      load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => {
+        if (source === "food") throw new MapApiError("network", "友善食光暫時讀取失敗");
+        return { stores: [], fetchedAt: Date.now(), fromCache: false };
+      }),
+    };
+    act(() => render(<App client={client} geolocation={null} />, root));
+    setInput("#store-search", "台鐵西");
+    setInput("#postal-code", "10a");
+    submit("#store-search");
+    expect(root.textContent).toContain("請輸入三位數郵遞區號");
+    expect(client.load).not.toHaveBeenCalled();
+
+    setInput("#postal-code", "100");
+    submit("#store-search");
+    await settleQueries();
+
+    expect(root.querySelector(".source-status--food [role='alert']")?.textContent)
+      .toContain("友善食光暫時讀取失敗");
+    expect(root.querySelector(".search-preview")?.textContent)
+      .toContain("部分地圖讀取失敗，搜尋結果不完整");
+    expect(root.querySelector("#nearby")?.textContent)
+      .toContain("部分地圖資料暫時無法確認");
+    expect(root.querySelector("#nearby")?.textContent).not.toContain("缺貨");
+  });
+
+  it("does not interpret an empty postal map response as a missing store or confirmed stock level", async () => {
+    const client: MapDataClient = {
+      load: vi.fn(async (): Promise<MapResult> => ({
+        stores: [],
+        fetchedAt: Date.now(),
+        fromCache: false,
+      })),
+    };
+    act(() => render(<App client={client} geolocation={null} />, root));
+    setInput("#store-search", "台鐵西");
+    setInput("#postal-code", "100");
+    submit("#store-search");
+    await settleQueries();
+
+    expect(root.querySelector(".search-preview")?.textContent)
+      .toContain("目前地圖未回傳符合店名的店家");
+    expect(root.querySelector("#nearby")?.textContent).toContain("不代表店家缺貨");
+    expect(root.querySelector("#favorites")?.textContent).toContain("還沒有收藏的分店");
+  });
+
   it("shows partial API errors without hiding successful map products", async () => {
     const client: MapDataClient = {
       load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => {

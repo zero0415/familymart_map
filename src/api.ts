@@ -53,7 +53,7 @@ export type OfficialStore = z.infer<typeof storeSchema>;
 
 export class MapApiError extends Error {
   constructor(
-    public readonly kind: "http" | "network" | "response" | "service",
+    public readonly kind: "http" | "network" | "response" | "service" | "input",
     message: string,
     cause?: unknown,
   ) {
@@ -113,13 +113,15 @@ export interface MapResult {
   fromCache: boolean;
 }
 
-export interface MapQuery {
+interface MapQueryBase {
   source: MapSource;
-  position: Coordinates;
   favoriteCodes: readonly string[];
   signal?: AbortSignal;
   force?: boolean;
 }
+
+export type MapQuery = MapQueryBase &
+  ({ position: Coordinates; postalCode?: never } | { postalCode: string; position?: never });
 
 export interface MapDataClient {
   load(query: MapQuery): Promise<MapResult>;
@@ -136,17 +138,23 @@ export class MapClient implements MapDataClient {
     private readonly now: () => number = Date.now,
   ) {}
 
-  async load({
-    source,
-    position,
-    favoriteCodes,
-    signal,
-    force = false,
-  }: MapQuery): Promise<MapResult> {
-    const latitude = Number(position.latitude.toFixed(4));
-    const longitude = Number(position.longitude.toFixed(4));
+  async load(query: MapQuery): Promise<MapResult> {
+    const { source, favoriteCodes, signal, force = false } = query;
+    const postalCode = query.postalCode ?? "";
+    if (postalCode && !/^\d{3}$/.test(postalCode)) {
+      throw new MapApiError("input", "郵遞區號須為 3 位數，未送出官方地圖查詢。");
+    }
+    let latitude = 0;
+    let longitude = 0;
+    if (!postalCode) {
+      if (!query.position) {
+        throw new MapApiError("input", "請提供查詢位置或三位數郵遞區號。");
+      }
+      latitude = Number(query.position.latitude.toFixed(4));
+      longitude = Number(query.position.longitude.toFixed(4));
+    }
     const codes = [...new Set(favoriteCodes)].sort();
-    const key = JSON.stringify([source, latitude, longitude, codes]);
+    const key = JSON.stringify([source, postalCode, latitude, longitude, codes]);
     const cached = this.cache.get(key);
     if (
       !force &&
@@ -168,7 +176,7 @@ export class MapClient implements MapDataClient {
         body: JSON.stringify({
           ProjectCode: MAP_SOURCES[source].projectCode,
           OldPKeys: codes,
-          PostInfo: "",
+          PostInfo: postalCode,
           Latitude: latitude,
           Longitude: longitude,
         }),

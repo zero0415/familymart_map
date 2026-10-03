@@ -573,6 +573,120 @@ ul {
   margin-top: 7px;
 }
 
+.name-search__row {
+  display: flex;
+  gap: 8px;
+}
+
+.name-search__row input {
+  min-width: 0;
+  flex: 1;
+}
+
+.name-search__row button {
+  min-width: 88px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 9px;
+  background: #0d6257;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.name-search__row button:hover {
+  background: #084d45;
+}
+
+.name-search > label:not(:first-child) {
+  margin-top: 17px;
+}
+
+.search-preview {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #d6e5d9;
+  border-radius: 10px;
+  background: #f5faf5;
+}
+
+.search-preview p {
+  color: #315a4d;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.search-preview ul {
+  margin-top: 8px;
+  border-top: 1px solid #d8e7dc;
+}
+
+.search-preview li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 0;
+  border-bottom: 1px solid #d8e7dc;
+}
+
+.search-preview li > div {
+  min-width: 0;
+}
+
+.search-preview strong,
+.search-preview small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.search-preview strong {
+  font-size: 12px;
+}
+
+.search-preview small {
+  margin-top: 3px;
+  color: #61766b;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.search-preview li button {
+  min-width: 54px;
+  min-height: 44px;
+  flex: 0 0 auto;
+  border: 1px solid #bad4c4;
+  border-radius: 8px;
+  background: #fff;
+  color: #17604f;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.search-preview li button:hover {
+  background: #e3f2e8;
+}
+
+.search-preview a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: #165e50;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.store-directory-link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 4px;
+  color: #165e50;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
 .coordinate-form {
   margin-top: 19px;
 }
