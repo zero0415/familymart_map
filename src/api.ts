@@ -22,9 +22,11 @@ export interface Coordinates {
 }
 
 const quantitySchema = z.number().int().nonnegative().nullish();
+export const PRODUCT_CODE_PATTERN = /^\d{1,20}$/;
 const productSchema = z.object({
   name: z.string().trim().min(1),
   qty: quantitySchema,
+  code: z.string().regex(PRODUCT_CODE_PATTERN).nullish(),
 });
 const categorySchema = z.object({
   name: z.string().trim().min(1),
@@ -106,6 +108,8 @@ export function parseMapResponse(value: unknown): OfficialStore[] {
 
 export const CACHE_DURATION_MS = 5 * 60_000;
 const API_URL = "https://stamp.family.com.tw/api/maps/MapProductInfo";
+const PRODUCT_IMAGE_API_URL = "https://stamp.family.com.tw/api/maps/MapProductImage";
+const PRODUCT_IMAGE_HOST = "delivery-prod-img.family.com.tw";
 
 export interface MapResult {
   stores: OfficialStore[];
@@ -125,6 +129,10 @@ export type MapQuery = MapQueryBase &
 
 export interface MapDataClient {
   load(query: MapQuery): Promise<MapResult>;
+}
+
+export interface ProductImageClient {
+  loadImage(productCode: string, signal?: AbortSignal): Promise<string>;
 }
 
 export class MapClient implements MapDataClient {
@@ -216,5 +224,82 @@ export class MapClient implements MapDataClient {
     };
     this.cache.set(key, result);
     return { ...result, fromCache: false };
+  }
+}
+
+export class MapProductImageClient implements ProductImageClient {
+  constructor(private readonly request: typeof fetch = (...args) => fetch(...args)) {}
+
+  async loadImage(productCode: string, signal?: AbortSignal): Promise<string> {
+    if (!PRODUCT_CODE_PATTERN.test(productCode)) {
+      throw new MapApiError("input", "商品圖片代碼格式無效，無法查詢官方圖片。");
+    }
+
+    const url = new URL(PRODUCT_IMAGE_API_URL);
+    url.searchParams.set("productId", productCode);
+    let response: Response;
+    try {
+      response = await this.request(url.toString(), {
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new MapApiError("network", "無法連線到官方商品圖片服務。請稍後重試。", error);
+    }
+
+    if (!response.ok) {
+      throw new MapApiError(
+        "http",
+        `官方商品圖片服務暫時無法回應（HTTP ${response.status}）。請稍後重試。`,
+      );
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new MapApiError("response", "官方商品圖片服務未回傳可讀取的 JSON。", error);
+    }
+
+    const envelope = z.object({ code: z.number(), data: z.unknown().optional() }).safeParse(payload);
+    if (!envelope.success) {
+      throw new MapApiError("response", "官方商品圖片資料格式已變更，無法安全顯示圖片。", envelope.error);
+    }
+    if (envelope.data.code !== 1) {
+      throw new MapApiError(
+        "service",
+        `官方商品圖片服務回報錯誤（代碼 ${envelope.data.code}）。請稍後重試。`,
+      );
+    }
+
+    const image = z.object({ imageUrl: z.string().trim().nullish() }).safeParse(envelope.data.data);
+    if (!image.success) {
+      throw new MapApiError("response", "官方商品圖片資料格式已變更，無法安全顯示圖片。", image.error);
+    }
+    if (!image.data.imageUrl) {
+      throw new MapApiError("response", "官方目前未提供這件商品的圖片。");
+    }
+
+    const address = z.url().safeParse(image.data.imageUrl);
+    if (!address.success) {
+      throw new MapApiError("response", "官方商品圖片網址無效，已停止載入。", address.error);
+    }
+    const parsed = new URL(address.data);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.hostname !== PRODUCT_IMAGE_HOST ||
+      parsed.port ||
+      parsed.username ||
+      parsed.password
+    ) {
+      throw new MapApiError("response", "官方商品圖片網址不安全，已停止載入。");
+    }
+    return parsed.href;
   }
 }

@@ -16,7 +16,7 @@ export function makeStore(overrides: Partial<OfficialStore> = {}): OfficialStore
           {
             name: "美味挖寶",
             products: [
-              { name: "惜—北海道玉米濃湯洋芋片", qty: 2 },
+              { name: "惜—北海道玉米濃湯洋芋片", qty: 2, code: "0065108" },
             ],
           },
         ],

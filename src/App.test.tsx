@@ -30,12 +30,101 @@ function fixtureClient(): MapDataClient {
   };
 }
 
+function renderDeniedLocationApp() {
+  const client = fixtureClient();
+  const denied: GeolocationPositionError = {
+    code: 1,
+    message: "denied",
+    PERMISSION_DENIED: 1,
+    POSITION_UNAVAILABLE: 2,
+    TIMEOUT: 3,
+  };
+  const getCurrentPosition = vi.fn(
+    (_success: PositionCallback, error?: PositionErrorCallback | null) => error?.(denied),
+  );
+  const geolocation: GeolocationClient = { getCurrentPosition };
+  act(() => render(<App client={client} geolocation={geolocation} />, root));
+  return { client, getCurrentPosition };
+}
+
+function productFixtureClient(): MapDataClient {
+  const treasure = makeStore({
+    info: [
+      {
+        name: "美味挖寶",
+        categories: [{
+          name: "食品",
+          products: [
+            { name: "惜—食品甲", qty: 1, code: "0065108" },
+            { name: "一般食品乙", qty: 2 },
+          ],
+        }],
+      },
+      {
+        name: "生活好物",
+        categories: [{
+          name: "用品",
+          products: [
+            { name: "惜-清潔用品", qty: 3, code: "0459602" },
+            { name: "一般用品", qty: 4 },
+          ],
+        }],
+      },
+      {
+        name: "珍藏酒窖",
+        categories: [{
+          name: "禁止酒駕／未滿十八歲禁止飲酒",
+          products: [{ name: "惜—酒品", qty: 1 }, { name: "一般酒品", qty: 2 }],
+        }],
+      },
+      {
+        name: "新群組",
+        categories: [{ name: "食品", products: [{ name: "惜—神秘包", qty: 1 }] }],
+      },
+    ],
+  });
+  const food = makeStore({
+    info: [{
+      name: "友善食光",
+      categories: [{
+        name: "鮮食",
+        products: [
+          { name: "友善便當", qty: 0, code: "0789123" },
+          { name: "友善無圖飯糰", qty: null },
+        ],
+      }],
+    }],
+  });
+  return {
+    load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => ({
+      stores: [source === "treasure" ? treasure : food],
+      fetchedAt: Date.parse("2026-10-04T03:50:00+08:00"),
+      fromCache: false,
+    })),
+  };
+}
+
+function saveFixtureFavorite() {
+  window.localStorage.setItem(
+    FAVORITES_KEY,
+    JSON.stringify([{ code: "018558", name: "全家台鐵西店" }]),
+  );
+}
+
 function button(label: RegExp): HTMLButtonElement {
   const found = [...root.querySelectorAll<HTMLButtonElement>("button")].find((element) =>
     label.test(element.getAttribute("aria-label") ?? element.textContent ?? ""),
   );
   if (!found) throw new Error(`Button not found: ${label}`);
   return found;
+}
+
+function favoriteCard(name: string): HTMLElement {
+  const card = [...root.querySelectorAll<HTMLElement>("#favorites .store-card")].find(
+    (element) => element.querySelector("h3")?.textContent === name,
+  );
+  if (!card) throw new Error(`Favorite card not found: ${name}`);
+  return card;
 }
 
 async function settleQueries() {
@@ -63,23 +152,319 @@ function submit(inputSelector: string) {
 }
 
 describe("interactive store finder", () => {
-  it("never requests location automatically; denial exposes a working region fallback and persistent favorite", async () => {
-    const client = fixtureClient();
-    const denied: GeolocationPositionError = {
-      code: 1,
-      message: "denied",
-      PERMISSION_DENIED: 1,
-      POSITION_UNAVAILABLE: 2,
-      TIMEOUT: 3,
-    };
-    const getCurrentPosition = vi.fn(
-      (_success: PositionCallback, error?: PositionErrorCallback | null) => error?.(denied),
-    );
-    const geolocation: GeolocationClient = { getCurrentPosition };
-    act(() => render(<App client={client} geolocation={geolocation} />, root));
+  it("never requests location automatically and reports denied permission", async () => {
+    const { client, getCurrentPosition } = renderDeniedLocationApp();
     expect(getCurrentPosition).not.toHaveBeenCalled();
     expect(client.load).not.toHaveBeenCalled();
 
+    await act(async () => {
+      button(/使用目前位置/).click();
+      await Promise.resolve();
+    });
+    expect(root.textContent).toContain("未取得定位權限");
+    expect(document.activeElement).toBe(root.querySelector("#area"));
+  });
+
+  describe("favorite treasure filters", () => {
+    it("filters only treasure products in saved stores, without hiding stores, food or nearby products", async () => {
+      saveFixtureFavorite();
+      const client = productFixtureClient();
+      act(() => render(<App client={client} geolocation={null} />, root));
+      setInput("#area", "taipei");
+      submit("#area");
+      await settleQueries();
+      expect(client.load).toHaveBeenCalledTimes(2);
+
+      const saved = favoriteCard("全家台鐵西店");
+      const savedDetails = saved.querySelector<HTMLDetailsElement>("details")!;
+      const nearbyDetails = root.querySelector<HTMLDetailsElement>("#nearby .store-card details")!;
+      expect(savedDetails.open).toBe(false);
+      expect(nearbyDetails.open).toBe(false);
+      act(() => savedDetails.querySelector("summary")!.click());
+      expect(savedDetails.open).toBe(true);
+      expect(saved.querySelectorAll(".product-panel--treasure .product-list li")).toHaveLength(7);
+      expect(saved.querySelector(".product-panel--treasure")?.textContent).toContain("類別／折扣未知");
+      expect(saved.querySelector(".product-panel--treasure")?.textContent).toContain("折扣未知");
+      expect(saved.querySelector(".product-panel--treasure")?.textContent).toContain("3折");
+      expect(saved.querySelector(".product-panel--food")?.textContent).toContain("友善便當");
+      expect(saved.querySelector(".product-panel--food")?.textContent).toContain("0 件");
+      expect(saved.querySelector(".product-panel--food")?.textContent).toContain("資料時間");
+      expect(saved.querySelector(".product-panel--food")?.textContent).not.toMatch(/5折|3折|折扣未知/);
+      expect(root.querySelector("#favorites")?.textContent).toContain("實際優惠以官方／現場為準");
+
+      setInput("#favorite-category", "supplies");
+      setInput("#favorite-prefix", "saving");
+      setInput("#favorite-discount", "3折");
+      expect(saved.querySelectorAll(".product-panel--treasure .product-list li")).toHaveLength(1);
+      expect(saved.querySelector(".product-panel--treasure .product-list")?.textContent)
+        .toContain("惜-清潔用品");
+      expect(saved.querySelector(".source-badge--treasure")?.textContent).toContain("1 / 7 項符合");
+      expect(root.querySelector(".favorite-filters__count")?.textContent).toContain("符合 1 / 7 項");
+      expect(saved.querySelector(".product-panel--food .product-list")?.textContent)
+        .toContain("友善便當");
+      expect(root.querySelectorAll("#nearby .product-panel--treasure .product-list li"))
+        .toHaveLength(7);
+      expect(root.querySelector("#nearby .source-badge--treasure")?.textContent)
+        .toContain("7 項明細");
+      expect(root.querySelector("#nearby .product-list__labels")).toBeNull();
+      expect(root.querySelector<HTMLDetailsElement>("#favorites .store-card details")?.open).toBe(true);
+
+      setInput("#favorite-category", "alcohol");
+      expect(favoriteCard("全家台鐵西店").querySelector(".product-panel--treasure")?.textContent)
+        .toContain("目前沒有符合篩選的挖寶商品");
+      expect(root.querySelector("#nearby .store-card")).not.toBeNull();
+      setInput("#store-search", "台鐵西");
+      expect(root.querySelector("#favorites .store-card")).not.toBeNull();
+      expect(root.querySelector("#nearby .store-card")).not.toBeNull();
+      act(() => button(/清除篩選/).click());
+      expect(root.querySelectorAll("#favorites .product-panel--treasure .product-list li")).toHaveLength(7);
+      expect(root.querySelector<HTMLSelectElement>("#favorite-category")?.value).toBe("all");
+      act(() => savedDetails.querySelector("summary")!.click());
+      expect(savedDetails.open).toBe(false);
+      expect(client.load).toHaveBeenCalledTimes(2);
+    });
+
+    it("distinguishes loading, empty map products, missing stores and filtered-out products", async () => {
+      window.localStorage.setItem(FAVORITES_KEY, JSON.stringify([
+        { code: "018558", name: "全家台鐵西店" },
+        { code: "009999", name: "全家大安店" },
+        { code: "000001", name: "全家舊收藏" },
+      ]));
+      const emptyStore = makeStore({ info: [] });
+      const nonmatchingStore = makeStore({
+        oldPKey: "009999",
+        name: "全家大安店",
+        info: [{
+          name: "生活好物",
+          categories: [{ name: "用品", products: [{ name: "一般用品", qty: 1 }] }],
+        }],
+      });
+      const client: MapDataClient = {
+        load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => ({
+          stores: source === "treasure" ? [emptyStore, nonmatchingStore] : [],
+          fetchedAt: Date.now(),
+          fromCache: false,
+        })),
+      };
+      act(() => render(<App client={client} geolocation={null} />, root));
+      setInput("#favorite-category", "food");
+      expect(favoriteCard("全家台鐵西店").querySelector(".product-panel--treasure")?.textContent)
+        .toContain("正在查詢這張地圖");
+      expect(favoriteCard("全家台鐵西店").querySelector(".product-panel--treasure")?.textContent)
+        .not.toContain("沒有符合篩選");
+      await settleQueries();
+
+      expect(favoriteCard("全家台鐵西店").querySelector(".product-panel--treasure")?.textContent)
+        .toContain("地圖回傳此店，但未提供可列出的商品明細");
+      expect(favoriteCard("全家大安店").querySelector(".product-panel--treasure")?.textContent)
+        .toContain("目前沒有符合篩選的挖寶商品");
+      expect(favoriteCard("全家舊收藏").querySelector(".product-panel--treasure")?.textContent)
+        .toContain("未回傳此店商品資料");
+      expect(root.querySelectorAll("#favorites .store-card")).toHaveLength(3);
+      expect(root.querySelector("#favorites .store-list")?.textContent).not.toContain("已缺貨");
+    });
+
+    it("keeps successful food products and error status when treasure lookup fails under a filter", async () => {
+      saveFixtureFavorite();
+      const client: MapDataClient = {
+        load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => {
+          if (source === "treasure") throw new MapApiError("service", "挖寶讀取失敗");
+          return {
+            stores: [makeStore({ info: [{
+              name: "友善食光",
+              categories: [{ name: "鮮食", products: [{ name: "友善便當", qty: 2 }] }],
+            }] })],
+            fetchedAt: Date.now(),
+            fromCache: false,
+          };
+        }),
+      };
+      act(() => render(<App client={client} geolocation={null} />, root));
+      setInput("#favorite-discount", "未知");
+      await settleQueries();
+
+      const saved = favoriteCard("全家台鐵西店");
+      expect(saved.querySelector(".source-badge--treasure")?.textContent).toContain("讀取失敗");
+      expect(saved.querySelector(".product-panel--treasure")?.textContent)
+        .toContain("挖寶讀取失敗");
+      expect(saved.querySelector(".product-panel--treasure")?.textContent).not.toContain("沒有符合篩選");
+      expect(saved.querySelector(".product-panel--food")?.textContent).toContain("友善便當");
+      expect(saved.querySelector(".product-panel--food")?.textContent).not.toContain("折扣未知");
+      expect(root.querySelector(".source-status--treasure [role='alert']")?.textContent)
+        .toContain("挖寶讀取失敗");
+    });
+  });
+
+  describe("safe favorite management and mobile navigation", () => {
+    it("does not remove a store from browse cards; management can cancel or confirm a named removal", async () => {
+      saveFixtureFavorite();
+      act(() => render(<App client={fixtureClient()} geolocation={null} />, root));
+      setInput("#area", "taipei");
+      submit("#area");
+      await settleQueries();
+
+      expect(root.querySelector("#favorites .favorite-button")?.tagName).toBe("SPAN");
+      expect(root.querySelector("#nearby .favorite-button")?.tagName).toBe("SPAN");
+      expect(root.querySelector("#favorites button[aria-label^='移除收藏']")).toBeNull();
+      expect(root.querySelector("#nearby button[aria-label^='移除收藏']")).toBeNull();
+      const manager = root.querySelector<HTMLDetailsElement>("#manage-favorites details")!;
+      expect(manager.open).toBe(false);
+      act(() => manager.querySelector("summary")!.click());
+      const remove = button(/準備移除收藏：全家台鐵西店/);
+      act(() => remove.click());
+      expect(document.activeElement?.textContent).toBe("取消");
+      expect(manager.textContent).toContain("確定要從此裝置的收藏移除「全家台鐵西店」");
+      expect(manager.textContent).toContain("店代碼 018558");
+      expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toHaveLength(1);
+      act(() => button(/^取消$/).click());
+      expect(document.activeElement).toBe(remove);
+      expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toHaveLength(1);
+
+      act(() => remove.click());
+      act(() => button(/^確認移除$/).click());
+      expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toEqual([]);
+      expect(root.querySelector("#favorites")?.textContent).toContain("還沒有收藏的分店");
+      expect(document.activeElement?.id).toBe("manage-favorites-title");
+      expect(root.querySelector("#nearby .store-card")).not.toBeNull();
+      act(() => button(/加入收藏：全家台鐵西店/).click());
+      expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toHaveLength(1);
+    });
+
+    it("shows a keyboard-accessible return link only after scrolling", () => {
+      const original = Object.getOwnPropertyDescriptor(window, "scrollY");
+      try {
+        act(() => render(<App client={fixtureClient()} geolocation={null} />, root));
+        expect(root.querySelector(".back-to-top")).toBeNull();
+        Object.defineProperty(window, "scrollY", { configurable: true, value: 600 });
+        act(() => { window.dispatchEvent(new Event("scroll")); });
+        const link = root.querySelector<HTMLAnchorElement>(".back-to-top");
+        expect(link?.getAttribute("href")).toBe("#top");
+        expect(link?.getAttribute("aria-label")).toBe("返回頁首");
+        expect(root.querySelector("#top")).not.toBeNull();
+        Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
+        act(() => { window.dispatchEvent(new Event("scroll")); });
+        expect(root.querySelector(".back-to-top")).toBeNull();
+      } finally {
+        if (original) Object.defineProperty(window, "scrollY", original);
+        else Reflect.deleteProperty(window, "scrollY");
+      }
+    });
+  });
+
+  function stubNativeDialog(): () => void {
+    const prototype = HTMLDialogElement.prototype;
+    const originalShow = Object.getOwnPropertyDescriptor(prototype, "showModal");
+    const originalClose = Object.getOwnPropertyDescriptor(prototype, "close");
+    Object.defineProperty(prototype, "showModal", {
+      configurable: true,
+      value: function (this: HTMLDialogElement) {
+        this.open = true;
+        this.querySelector<HTMLButtonElement>("[aria-label='關閉商品圖片視窗']")?.focus();
+      },
+    });
+    Object.defineProperty(prototype, "close", {
+      configurable: true,
+      value: function (this: HTMLDialogElement) {
+        this.open = false;
+        this.dispatchEvent(new Event("close"));
+      },
+    });
+    return () => {
+      if (originalShow) Object.defineProperty(prototype, "showModal", originalShow);
+      else Reflect.deleteProperty(prototype, "showModal");
+      if (originalClose) Object.defineProperty(prototype, "close", originalClose);
+      else Reflect.deleteProperty(prototype, "close");
+    };
+  }
+
+  describe("on-demand product image preview", () => {
+    let restoreDialog: () => void;
+    beforeEach(() => { restoreDialog = stubNativeDialog(); });
+    afterEach(() => restoreDialog());
+
+    it("loads images only when requested from either map/list, handles a broken image and restores focus", async () => {
+      saveFixtureFavorite();
+      const loadImage = vi.fn(async (code: string) =>
+        `https://delivery-prod-img.family.com.tw/product/${code}.png`,
+      );
+      act(() => render(
+        <App client={productFixtureClient()} imageClient={{ loadImage }} geolocation={null} />,
+        root,
+      ));
+      setInput("#area", "taipei");
+      submit("#area");
+      await settleQueries();
+
+      expect(loadImage).not.toHaveBeenCalled();
+      expect(root.querySelector(".image-dialog img")).toBeNull();
+      const foodButton = root.querySelector<HTMLButtonElement>(
+        "#favorites .product-panel--food .product-list__image-button",
+      )!;
+      act(() => foodButton.click());
+      expect(root.querySelector<HTMLDialogElement>(".image-dialog")?.open).toBe(true);
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("關閉商品圖片視窗");
+      expect(loadImage).toHaveBeenCalledWith("0789123", expect.any(AbortSignal));
+      await act(async () => { await Promise.resolve(); });
+      const image = root.querySelector<HTMLImageElement>(".image-dialog img")!;
+      expect(image.src).toBe("https://delivery-prod-img.family.com.tw/product/0789123.png");
+      expect(image.alt).toContain("友善便當");
+      expect(image.getAttribute("referrerpolicy")).toBe("no-referrer");
+      act(() => { image.dispatchEvent(new Event("error")); });
+      expect(root.querySelector(".image-dialog [role='alert']")?.textContent)
+        .toContain("圖片連結無法載入");
+      expect(root.querySelector(".image-dialog img")).toBeNull();
+      act(() => button(/關閉商品圖片視窗/).click());
+      expect(root.querySelector<HTMLDialogElement>(".image-dialog")?.open).toBe(false);
+      expect(document.activeElement).toBe(foodButton);
+
+      const nearbyButton = root.querySelector<HTMLButtonElement>(
+        "#nearby .product-panel--treasure .product-list__image-button",
+      )!;
+      act(() => nearbyButton.click());
+      await act(async () => { await Promise.resolve(); });
+      expect(loadImage).toHaveBeenCalledWith("0065108", expect.any(AbortSignal));
+      act(() => button(/關閉商品圖片視窗/).click());
+      expect(document.activeElement).toBe(nearbyButton);
+      expect(root.querySelector("#favorites .product-panel--food .product-list__image-unavailable")
+        ?.textContent).toContain("未提供圖片代碼");
+    });
+
+    it("aborts a closed preview and reports an unavailable official image without inventing one", async () => {
+      saveFixtureFavorite();
+      let finish!: (url: string) => void;
+      const pending = new Promise<string>((resolve) => { finish = resolve; });
+      const loadImage = vi.fn((_code: string, _signal?: AbortSignal): Promise<string> => pending);
+      act(() => render(<App client={fixtureClient()} imageClient={{ loadImage }} geolocation={null} />, root));
+      await settleQueries();
+
+      const opener = root.querySelector<HTMLButtonElement>(
+        "#favorites .product-panel--treasure .product-list__image-button",
+      )!;
+      act(() => opener.click());
+      expect(root.querySelector(".image-dialog [role='status']")?.textContent)
+        .toContain("正在向官方查詢圖片");
+      expect(root.querySelector(".image-dialog img")).toBeNull();
+      const signal = loadImage.mock.calls[0][1]!;
+      act(() => button(/關閉商品圖片視窗/).click());
+      expect(signal.aborted).toBe(true);
+      expect(document.activeElement).toBe(opener);
+      await act(async () => {
+        finish("https://delivery-prod-img.family.com.tw/product/0065108.png");
+        await Promise.resolve();
+      });
+      expect(root.querySelector(".image-dialog img")).toBeNull();
+
+      loadImage.mockRejectedValueOnce(new MapApiError("response", "官方目前未提供這件商品的圖片。"));
+      act(() => opener.click());
+      await act(async () => { await Promise.resolve(); });
+      expect(root.querySelector(".image-dialog [role='alert']")?.textContent)
+        .toContain("官方目前未提供這件商品的圖片");
+      expect(root.querySelector(".image-dialog img")).toBeNull();
+    });
+  });
+
+  it("uses the region fallback after denial and retains a favorite", async () => {
+    const { client } = renderDeniedLocationApp();
     await act(async () => {
       button(/使用目前位置/).click();
       await Promise.resolve();
@@ -205,6 +590,9 @@ describe("interactive store finder", () => {
     expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toEqual([
       expect.objectContaining({ code: "018558" }),
     ]);
+    expect(root.querySelector(".search-preview__saved")?.textContent).toBe("已收藏");
+    expect(root.querySelector(".search-preview li button[aria-label^='移除']")).toBeNull();
+    expect(root.querySelector("#favorites .manage-favorites-link")).not.toBeNull();
   });
 
   it("submits a name search within a loaded area and presents matching stores next to the field", async () => {
@@ -254,6 +642,15 @@ describe("interactive store finder", () => {
     expect(root.querySelector("#nearby")?.textContent).not.toContain("全家舊收藏");
     expect(root.querySelector("#favorites")?.textContent).toContain("全家舊收藏");
     expect(root.querySelector("#favorites")?.textContent).toContain("惜—北海道玉米濃湯洋芋片");
+    setInput("#favorite-category", "food");
+    setInput("#favorite-discount", "5折");
+    expect(root.querySelector("#favorites .favorite-filters__count")?.textContent)
+      .toContain("符合 1 / 1 項");
+    expect(root.querySelector("#favorites .store-card .source-badge--treasure")?.textContent)
+      .toContain("1 / 1 項符合");
+    expect(root.querySelector("#nearby .store-card .source-badge--treasure")?.textContent)
+      .toContain("1 項明細");
+    expect(client.load).toHaveBeenCalledTimes(4);
   });
 
   it("validates postal input and distinguishes empty results from API failures", async () => {

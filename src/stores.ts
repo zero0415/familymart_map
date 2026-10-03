@@ -7,6 +7,8 @@ export interface ListedProduct {
   name: string;
   quantity?: number;
   category: string;
+  groupName: string;
+  code?: string;
 }
 
 export interface SourceProducts {
@@ -69,6 +71,8 @@ export function mergeStores(
               name: product.name,
               quantity: product.qty ?? undefined,
               category: category.name,
+              groupName: group.name,
+              code: product.code ?? undefined,
             })),
           ),
         ),

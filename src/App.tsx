@@ -3,6 +3,7 @@ import {
   MAP_SOURCES,
   MapApiError,
   MapClient,
+  MapProductImageClient,
   SOURCE_IDS,
   type Coordinates,
   type MapDataClient,
@@ -10,12 +11,12 @@ import {
   type MapResult,
   type MapSource,
   type OfficialStore,
+  type ProductImageClient,
 } from "./api";
 import {
   FavoriteStorageError,
   readFavorites,
   STORE_CODE_PATTERN,
-  toggleFavorite,
   writeFavorites,
   type Favorite,
 } from "./favorites";
@@ -36,6 +37,14 @@ import {
   type NearbyStore,
   type SourceProducts,
 } from "./stores";
+import {
+  classifyTreasureProduct,
+  DEFAULT_TREASURE_FILTERS,
+  filterTreasureProducts,
+  hasActiveTreasureFilters,
+  TREASURE_CATEGORY_LABELS,
+  type TreasureFilters,
+} from "./treasure";
 
 type LoadState =
   | { status: "idle" }
@@ -50,12 +59,37 @@ interface SearchCenter {
 
 interface AppProps {
   client?: MapDataClient;
+  imageClient?: ProductImageClient;
   geolocation?: GeolocationClient | null;
   storage?: Storage | null;
 }
 
 const defaultClient = new MapClient();
+const defaultImageClient = new MapProductImageClient();
 const REFRESH_INTERVAL_MS = 60_000;
+const CATEGORY_FILTER_OPTIONS = [
+  { value: "all", label: "全部" },
+  { value: "food", label: "食品" },
+  { value: "supplies", label: "用品" },
+  { value: "alcohol", label: "酒品" },
+  { value: "unknown", label: "類別未知" },
+] as const satisfies readonly { value: TreasureFilters["category"]; label: string }[];
+const PREFIX_FILTER_OPTIONS = [
+  { value: "all", label: "全部" },
+  { value: "saving", label: "惜-開頭" },
+  { value: "regular", label: "非惜-開頭" },
+] as const satisfies readonly { value: TreasureFilters["prefix"]; label: string }[];
+const DISCOUNT_FILTER_OPTIONS = [
+  { value: "all", label: "全部" },
+  { value: "5折", label: "5折" },
+  { value: "3折", label: "3折" },
+  { value: "未知", label: "未知" },
+] as const satisfies readonly { value: TreasureFilters["discount"]; label: string }[];
+
+type ImagePreview =
+  | { name: string; status: "loading" }
+  | { name: string; status: "ready"; url: string }
+  | { name: string; status: "error"; message: string };
 const timeFormatter = new Intl.DateTimeFormat("zh-TW", {
   timeZone: "Asia/Taipei",
   year: "numeric",
@@ -154,16 +188,36 @@ function SourceDetails({
   source,
   data,
   state,
+  treasureFilters,
+  onShowImage,
 }: {
   source: MapSource;
   data: SourceProducts | undefined;
   state: LoadState;
+  treasureFilters?: TreasureFilters;
+  onShowImage: (code: string, name: string, opener: HTMLButtonElement) => void;
 }) {
+  const products = data?.products ?? [];
+  const visibleProducts =
+    source === "treasure" && treasureFilters
+      ? filterTreasureProducts(products, treasureFilters)
+      : products;
+  const filtered =
+    source === "treasure" && treasureFilters
+      ? hasActiveTreasureFilters(treasureFilters)
+      : false;
+
   return (
     <section class={`product-panel product-panel--${source}`} aria-label={`${MAP_SOURCES[source].name}商品`}>
       <div class="product-panel__heading">
         <h4>{MAP_SOURCES[source].name}</h4>
-        {data && <span>{data.products.length} 項商品明細</span>}
+        {data && (
+          <span>
+            {filtered && products.length > 0
+              ? `${visibleProducts.length} / ${products.length} 項符合`
+              : `${products.length} 項商品明細`}
+          </span>
+        )}
       </div>
       {state.status === "loading" ? (
         <p class="muted">正在查詢這張地圖…</p>
@@ -178,20 +232,65 @@ function SourceDetails({
           <p class="product-panel__time">
             資料時間：{data.updatedAt ? timeLabel(data.updatedAt) : "官方未提供"}
           </p>
-          {data.products.length > 0 ? (
+          {visibleProducts.length > 0 ? (
             <ul class="product-list">
-              {data.products.map((product, index) => (
-                <li key={`${product.name}-${product.category}-${index}`}>
-                  <div>
-                    <span class="product-list__name">{product.name}</span>
-                    <small>{product.category}</small>
-                  </div>
-                  <span class="product-list__quantity">
-                    {product.quantity === undefined ? "數量未提供" : `${product.quantity} 件`}
-                  </span>
-                </li>
-              ))}
+              {visibleProducts.map((product, index) => {
+                const classification =
+                  source === "treasure" && treasureFilters
+                    ? classifyTreasureProduct(product)
+                    : null;
+                const imageCode = product.code;
+                return (
+                  <li key={`${product.groupName}-${product.name}-${index}`}>
+                    <div class="product-list__details">
+                      <span class="product-list__name">{product.name}</span>
+                      {classification && (
+                        <span class="product-list__labels">
+                          {classification.category === "unknown" ? (
+                            <span class="product-list__tag">類別／折扣未知</span>
+                          ) : (
+                            <>
+                              <span class="product-list__tag">
+                                {TREASURE_CATEGORY_LABELS[classification.category]}
+                              </span>
+                              <span class="product-list__tag product-list__tag--discount">
+                                {classification.discount === "未知"
+                                  ? "折扣未知"
+                                  : classification.discount}
+                              </span>
+                            </>
+                          )}
+                          <span class="product-list__tag">
+                            {classification.saving ? "惜-開頭" : "非惜-開頭"}
+                          </span>
+                        </span>
+                      )}
+                      <small>{product.category}</small>
+                    </div>
+                    <div class="product-list__side">
+                      <span class="product-list__quantity">
+                        {product.quantity === undefined ? "數量未提供" : `${product.quantity} 件`}
+                      </span>
+                      {imageCode ? (
+                        <button
+                          type="button"
+                          class="product-list__image-button"
+                          aria-label={`查看圖片：${product.name}`}
+                          aria-haspopup="dialog"
+                          onClick={(event) => onShowImage(imageCode, product.name, event.currentTarget)}
+                        >
+                          查看圖片
+                        </button>
+                      ) : (
+                        <span class="product-list__image-unavailable">未提供圖片代碼</span>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
+          ) : filtered && products.length > 0 ? (
+            <p class="muted">目前沒有符合篩選的挖寶商品；請調整或清除篩選。</p>
           ) : (
             <p class="muted">地圖回傳此店，但未提供可列出的商品明細；請至官方地圖確認。</p>
           )}
@@ -201,11 +300,17 @@ function SourceDetails({
   );
 }
 
-function SourceBadge({ source, data, state }: {
+function SourceBadge({ source, data, state, treasureFilters }: {
   source: MapSource;
   data: SourceProducts | undefined;
   state: LoadState;
+  treasureFilters?: TreasureFilters;
 }) {
+  const matched =
+    source === "treasure" && treasureFilters && data?.products.length &&
+    hasActiveTreasureFilters(treasureFilters)
+      ? filterTreasureProducts(data.products, treasureFilters).length
+      : null;
   const text =
     state.status === "loading"
       ? "查詢中"
@@ -214,7 +319,9 @@ function SourceBadge({ source, data, state }: {
         : state.status === "idle"
           ? "未查詢"
           : data
-            ? `${data.products.length} 項明細`
+            ? matched === null
+              ? `${data.products.length} 項明細`
+              : `${matched} / ${data.products.length} 項符合`
             : "未回傳此店";
   return (
     <span class={`source-badge source-badge--${source}`}>
@@ -228,15 +335,19 @@ function StoreCard({
   isFavorite,
   distance,
   states,
-  expanded,
-  onToggle,
+  favoriteView,
+  treasureFilters,
+  onAdd,
+  onShowImage,
 }: {
   store: MergedStore;
   isFavorite: boolean;
   distance?: number;
   states: Record<MapSource, LoadState>;
-  expanded: boolean;
-  onToggle: (store: MergedStore) => void;
+  favoriteView: boolean;
+  treasureFilters?: TreasureFilters;
+  onAdd: (store: MergedStore) => void;
+  onShowImage: (code: string, name: string, opener: HTMLButtonElement) => void;
 }) {
   const panels = SOURCE_IDS.map((source) => (
     <SourceDetails
@@ -244,11 +355,13 @@ function StoreCard({
       source={source}
       data={store.sources[source]}
       state={states[source]}
+      treasureFilters={source === "treasure" ? treasureFilters : undefined}
+      onShowImage={onShowImage}
     />
   ));
 
   return (
-    <article class={`store-card${expanded ? " store-card--favorite" : ""}`}>
+    <article class={`store-card${favoriteView ? " store-card--favorite" : ""}`}>
       <div class="store-card__head">
         <div class="store-card__identity">
           <h3>{store.name}</h3>
@@ -258,16 +371,20 @@ function StoreCard({
             {distance !== undefined && `・距查詢中心約 ${formatDistance(distance)}`}
           </small>
         </div>
-        <button
-          type="button"
-          class={`favorite-button${isFavorite ? " favorite-button--active" : ""}`}
-          aria-pressed={isFavorite}
-          aria-label={`${isFavorite ? "移除" : "加入"}收藏：${store.name}`}
-          onClick={() => onToggle(store)}
-        >
-          <span aria-hidden="true">{isFavorite ? "★" : "☆"}</span>
-          {isFavorite ? "已收藏" : "收藏"}
-        </button>
+        {isFavorite ? (
+          <span class="favorite-button favorite-button--active" aria-label={`${store.name}已收藏`}>
+            <span aria-hidden="true">★</span> 已收藏
+          </span>
+        ) : (
+          <button
+            type="button"
+            class="favorite-button"
+            aria-label={`加入收藏：${store.name}`}
+            onClick={() => onAdd(store)}
+          >
+            <span aria-hidden="true">☆</span> 收藏
+          </button>
+        )}
       </div>
       <div class="store-card__badges">
         {SOURCE_IDS.map((source) => (
@@ -276,17 +393,18 @@ function StoreCard({
             source={source}
             data={store.sources[source]}
             state={states[source]}
+            treasureFilters={source === "treasure" ? treasureFilters : undefined}
           />
         ))}
       </div>
-      {expanded ? (
+      <details class="store-card__details">
+        <summary>
+          {favoriteView
+            ? "展開或收合兩張地圖的商品與資料時間"
+            : "查看兩張地圖的商品與資料時間"}
+        </summary>
         <div class="store-card__panels">{panels}</div>
-      ) : (
-        <details class="store-card__details">
-          <summary>查看兩張地圖的商品與資料時間</summary>
-          <div class="store-card__panels">{panels}</div>
-        </details>
-      )}
+      </details>
     </article>
   );
 }
@@ -348,6 +466,7 @@ function NearbyDiagram({
 
 export function App({
   client = defaultClient,
+  imageClient = defaultImageClient,
   geolocation,
   storage,
 }: AppProps) {
@@ -368,6 +487,11 @@ export function App({
   const [search, setSearch] = useState("");
   const [postalInput, setPostalInput] = useState("");
   const [searchNotice, setSearchNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const [treasureFilters, setTreasureFilters] = useState<TreasureFilters>(DEFAULT_TREASURE_FILTERS);
+  const [pendingRemoval, setPendingRemoval] = useState<string | null>(null);
+  const [imagePreview, setImagePreview] = useState<ImagePreview | null>(null);
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const [storeCode, setStoreCode] = useState("");
   const [codeMessage, setCodeMessage] = useState<string | null>(null);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
@@ -379,9 +503,35 @@ export function App({
   const locationAttempt = useRef(0);
   const areaSelectRef = useRef<HTMLSelectElement>(null);
   const postalInputRef = useRef<HTMLInputElement>(null);
+  const removeTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const cancelRemovalRef = useRef<HTMLButtonElement>(null);
+  const managerSummaryRef = useRef<HTMLElement>(null);
+  const managerTitleRef = useRef<HTMLHeadingElement>(null);
+  const imageDialogRef = useRef<HTMLDialogElement>(null);
+  const imageRequestRef = useRef<AbortController | null>(null);
+  const imageTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const favoriteCodesKey = favorites.map((favorite) => favorite.code).sort().join(",");
   const favoriteCodes = favoriteCodesKey ? favoriteCodesKey.split(",") : [];
+
+  useEffect(() => {
+    const update = () => setShowBackToTop(window.scrollY > 420);
+    window.addEventListener("scroll", update, { passive: true });
+    update();
+    return () => window.removeEventListener("scroll", update);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (pendingRemoval) cancelRemovalRef.current?.focus();
+  }, [pendingRemoval]);
+
+  useLayoutEffect(() => {
+    if (imagePreview && imageDialogRef.current && !imageDialogRef.current.open) {
+      imageDialogRef.current.showModal();
+    }
+  }, [imagePreview !== null]);
+
+  useEffect(() => () => imageRequestRef.current?.abort(), []);
 
   useLayoutEffect(() => {
     if (!center && !postalCode && !favoriteCodesKey) {
@@ -572,6 +722,14 @@ export function App({
     ? [...byCode.values()].filter((store) => matchesStore(store, search))
     : [];
   const favoriteStores = savedStores.filter((store) => matchesStore(store, search));
+  const readyTreasureFavorites = favoriteStores.filter(
+    (store) => favoriteSourceState(store, "treasure").status === "ready",
+  );
+  const countableTreasureProducts = readyTreasureFavorites.flatMap(
+    (store) => store.sources.treasure?.products ?? [],
+  );
+  const matchingTreasureCount =
+    filterTreasureProducts(countableTreasureProducts, treasureFilters).length;
   const nearby = center
     ? getNearby(mapStores, center.position).filter(({ store }) => matchesStore(store, search))
     : [];
@@ -713,14 +871,78 @@ export function App({
       : "favorites-title");
   }
 
-  function toggle(store: MergedStore) {
-    save(
-      toggleFavorite(favorites, {
-        code: store.code,
-        name: store.name,
-        address: store.address,
-      }),
-    );
+  function addFavorite(store: MergedStore) {
+    save([
+      { code: store.code, name: store.name, address: store.address },
+      ...favorites.filter((favorite) => favorite.code !== store.code),
+    ]);
+  }
+
+  function confirmRemoval(code: string) {
+    if (pendingRemoval !== code) throw new Error("收藏移除確認狀態不一致。");
+    save(favorites.filter((favorite) => favorite.code !== code));
+    setPendingRemoval(null);
+    removeTriggerRef.current = null;
+    if (favorites.length === 1) {
+      managerTitleRef.current?.focus();
+    } else {
+      managerSummaryRef.current?.focus();
+    }
+  }
+
+  function cancelRemoval() {
+    setPendingRemoval(null);
+    removeTriggerRef.current?.focus();
+    removeTriggerRef.current = null;
+  }
+
+  function chooseTreasureFilter<Key extends keyof TreasureFilters>(
+    field: Key,
+    value: string,
+    options: readonly { value: TreasureFilters[Key] }[],
+  ) {
+    const selected = options.find((option) => option.value === value);
+    if (!selected) throw new Error(`無效的挖寶篩選條件：${field}=${value}`);
+    setTreasureFilters((current) => ({ ...current, [field]: selected.value }));
+  }
+
+  function showImage(code: string, name: string, opener: HTMLButtonElement) {
+    imageRequestRef.current?.abort();
+    const controller = new AbortController();
+    imageRequestRef.current = controller;
+    imageTriggerRef.current = opener;
+    setImageLoaded(false);
+    setImagePreview({ name, status: "loading" });
+    void imageClient.loadImage(code, controller.signal)
+      .then((url) => {
+        if (!controller.signal.aborted) setImagePreview({ name, status: "ready", url });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (!(error instanceof MapApiError)) {
+          console.error("Unexpected FamilyMart product image error", error);
+        }
+        setImagePreview({
+          name,
+          status: "error",
+          message: error instanceof MapApiError
+            ? error.message
+            : "讀取商品圖片時發生未預期錯誤。請稍後重試。",
+        });
+      });
+  }
+
+  function closeImage() {
+    imageRequestRef.current?.abort();
+    imageRequestRef.current = null;
+    setImagePreview(null);
+    const opener = imageTriggerRef.current;
+    imageTriggerRef.current = null;
+    if (opener?.isConnected) {
+      opener.focus();
+    } else {
+      document.getElementById("main-content")?.focus();
+    }
   }
 
   function addCode(event: Event) {
@@ -765,7 +987,7 @@ export function App({
 
   return (
     <>
-      <header class="site-header">
+      <header id="top" class="site-header">
         <div class="container site-header__inner">
           <a class="brand" href="#main-content" aria-label="全家附近好物，回到主要內容">
             <span class="brand__mark" aria-hidden="true"><span /></span>
@@ -780,7 +1002,7 @@ export function App({
         </div>
       </header>
 
-      <main id="main-content">
+      <main id="main-content" tabIndex={-1}>
         <section class="hero">
           <div class="container hero__inner">
             <div>
@@ -992,14 +1214,19 @@ export function App({
                                       : `收藏店（不一定在查詢區域）・${store.address || store.code}`}
                                   </small>
                                 </div>
-                                <button
-                                  type="button"
-                                  aria-pressed={isFavorite}
-                                  aria-label={`${isFavorite ? "移除" : "加入"}收藏：${store.name}`}
-                                  onClick={() => toggle(store)}
-                                >
-                                  {isFavorite ? "已收藏" : "收藏"}
-                                </button>
+                                {isFavorite ? (
+                                  <span class="search-preview__saved" aria-label={`${store.name}已收藏`}>
+                                    已收藏
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    aria-label={`加入收藏：${store.name}`}
+                                    onClick={() => addFavorite(store)}
+                                  >
+                                    收藏
+                                  </button>
+                                )}
                               </li>
                             );
                           })}
@@ -1041,6 +1268,77 @@ export function App({
                     <div class="section-label"><span>★</span> 快速查看</div>
                     <h2 id="favorites-title" tabIndex={-1}>我的收藏 <span>{favorites.length}</span></h2>
                   </div>
+                  {favorites.length > 0 && (
+                    <a class="manage-favorites-link" href="#manage-favorites">管理收藏 <span aria-hidden="true">→</span></a>
+                  )}
+                </div>
+                <div class="favorite-filters" aria-labelledby="favorite-filters-title">
+                  <div class="favorite-filters__heading">
+                    <h3 id="favorite-filters-title">篩選收藏中的挖寶商品</h3>
+                    {hasActiveTreasureFilters(treasureFilters) && (
+                      <button
+                        type="button"
+                        class="favorite-filters__reset"
+                        onClick={() => setTreasureFilters(DEFAULT_TREASURE_FILTERS)}
+                      >
+                        清除篩選
+                      </button>
+                    )}
+                  </div>
+                  <p class="favorite-filters__note">
+                    只篩選收藏中的挖寶商品，不影響分店、友善食光或附近清單。
+                    折數依使用者提供規則判讀，實際優惠以官方／現場為準。
+                  </p>
+                  <div class="favorite-filters__fields">
+                    <div>
+                      <label for="favorite-category">商品分類</label>
+                      <select
+                        id="favorite-category"
+                        value={treasureFilters.category}
+                        onChange={(event) =>
+                          chooseTreasureFilter("category", event.currentTarget.value, CATEGORY_FILTER_OPTIONS)
+                        }
+                      >
+                        {CATEGORY_FILTER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label for="favorite-prefix">惜字開頭</label>
+                      <select
+                        id="favorite-prefix"
+                        value={treasureFilters.prefix}
+                        onChange={(event) =>
+                          chooseTreasureFilter("prefix", event.currentTarget.value, PREFIX_FILTER_OPTIONS)
+                        }
+                      >
+                        {PREFIX_FILTER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label for="favorite-discount">自訂折數</label>
+                      <select
+                        id="favorite-discount"
+                        value={treasureFilters.discount}
+                        onChange={(event) =>
+                          chooseTreasureFilter("discount", event.currentTarget.value, DISCOUNT_FILTER_OPTIONS)
+                        }
+                      >
+                        {DISCOUNT_FILTER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  {readyTreasureFavorites.length > 0 && (
+                    <p class="favorite-filters__count" role="status">
+                      已取得明細的收藏店：符合 {matchingTreasureCount} / {countableTreasureProducts.length}
+                      {" "}項挖寶商品（未回傳資料不計入）。
+                    </p>
+                  )}
                 </div>
                 {favorites.length === 0 ? (
                   <div class="empty-state">
@@ -1060,7 +1358,8 @@ export function App({
                         key={store.code}
                         store={store}
                         isFavorite
-                        expanded
+                        favoriteView
+                        treasureFilters={treasureFilters}
                         states={{
                           food: favoriteSourceState(store, "food"),
                           treasure: favoriteSourceState(store, "treasure"),
@@ -1073,10 +1372,83 @@ export function App({
                               })
                             : undefined
                         }
-                        onToggle={toggle}
+                        onAdd={addFavorite}
+                        onShowImage={showImage}
                       />
                     ))}
                   </div>
+                )}
+              </section>
+
+              <section id="manage-favorites" class="result-section" aria-labelledby="manage-favorites-title">
+                <div class="result-section__heading">
+                  <div>
+                    <div class="section-label"><span>✎</span> 獨立管理</div>
+                    <h2 id="manage-favorites-title" ref={managerTitleRef} tabIndex={-1}>管理收藏</h2>
+                    <p>瀏覽收藏或附近店家時不會一鍵移除；只能在這裡確認後刪除。</p>
+                  </div>
+                </div>
+                {favorites.length > 0 ? (
+                  <details
+                    class="favorite-manager"
+                    onToggle={(event) => {
+                      if (!event.currentTarget.open) setPendingRemoval(null);
+                    }}
+                  >
+                    <summary ref={managerSummaryRef}>展開管理清單（{favorites.length} 間）</summary>
+                    <ul class="favorite-manager__list">
+                      {favorites.map((favorite) => (
+                        <li key={favorite.code}>
+                          <div class="favorite-manager__identity">
+                            <strong>{favorite.name}</strong>
+                            <small>店代碼 {favorite.code}</small>
+                          </div>
+                          <button
+                            type="button"
+                            class="favorite-manager__remove"
+                            aria-label={`準備移除收藏：${favorite.name}`}
+                            aria-expanded={pendingRemoval === favorite.code}
+                            aria-controls={
+                              pendingRemoval === favorite.code
+                                ? `confirm-remove-${favorite.code}`
+                                : undefined
+                            }
+                            onClick={(event) => {
+                              removeTriggerRef.current = event.currentTarget;
+                              setPendingRemoval(favorite.code);
+                            }}
+                          >
+                            移除…
+                          </button>
+                          {pendingRemoval === favorite.code && (
+                            <div
+                              id={`confirm-remove-${favorite.code}`}
+                              class="favorite-manager__confirm"
+                              role="group"
+                              aria-label={`確認移除${favorite.name}`}
+                            >
+                              <p>
+                                確定要從此裝置的收藏移除「{favorite.name}」
+                                （店代碼 {favorite.code}）嗎？
+                              </p>
+                              <div class="favorite-manager__actions">
+                                <button type="button" ref={cancelRemovalRef} onClick={cancelRemoval}>取消</button>
+                                <button
+                                  type="button"
+                                  class="favorite-manager__confirm-remove"
+                                  onClick={() => confirmRemoval(favorite.code)}
+                                >
+                                  確認移除
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                ) : (
+                  <p class="muted">尚未收藏分店；可從附近店家或店代碼加入。</p>
                 )}
               </section>
 
@@ -1135,8 +1507,9 @@ export function App({
                               isFavorite={favorites.some((favorite) => favorite.code === store.code)}
                               distance={distance}
                               states={states}
-                              expanded={false}
-                              onToggle={toggle}
+                              favoriteView={false}
+                              onAdd={addFavorite}
+                              onShowImage={showImage}
                             />
                           ))}
                         </div>
@@ -1188,6 +1561,63 @@ export function App({
           </p>
         </div>
       </footer>
+      <dialog
+        ref={imageDialogRef}
+        class="image-dialog"
+        aria-labelledby="image-dialog-title"
+        onClose={closeImage}
+      >
+        <div class="image-dialog__heading">
+          <h2 id="image-dialog-title">商品圖片</h2>
+          <button
+            type="button"
+            aria-label="關閉商品圖片視窗"
+            onClick={() => imageDialogRef.current?.close()}
+          >
+            關閉
+          </button>
+        </div>
+        {imagePreview && (
+          <>
+            <p class="image-dialog__name">{imagePreview.name}</p>
+            {imagePreview.status === "loading" ? (
+              <p class="muted" role="status">正在向官方查詢圖片…</p>
+            ) : imagePreview.status === "error" ? (
+              <p class="inline-alert" role="alert">{imagePreview.message}</p>
+            ) : (
+              <>
+                {!imageLoaded && <p class="muted" role="status">正在載入官方圖片…</p>}
+                <img
+                  src={imagePreview.url}
+                  alt={`${imagePreview.name} 的商品圖片`}
+                  referrerPolicy="no-referrer"
+                  onLoad={() => setImageLoaded(true)}
+                  onError={() =>
+                    setImagePreview((current) =>
+                      current?.status === "ready"
+                        ? {
+                            name: current.name,
+                            status: "error",
+                            message: "官方圖片連結無法載入；請至官方地圖查看。",
+                          }
+                        : current
+                    )
+                  }
+                />
+              </>
+            )}
+            <p class="image-dialog__note">
+              圖片由官方商品圖片服務提供；不代表即時庫存或實際優惠。
+            </p>
+          </>
+        )}
+      </dialog>
+      {showBackToTop && (
+        <a class="back-to-top" href="#top" aria-label="返回頁首">
+          <span class="back-to-top__arrow" aria-hidden="true">↑</span>
+          <span class="back-to-top__text">返回頁首</span>
+        </a>
+      )}
     </>
   );
 }

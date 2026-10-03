@@ -3,6 +3,7 @@ import {
   CACHE_DURATION_MS,
   MapApiError,
   MapClient,
+  MapProductImageClient,
   parseMapResponse,
   type MapQuery,
 } from "./api";
@@ -16,8 +17,16 @@ const query: MapQuery = {
 
 describe("official map response", () => {
   it("accepts a valid store and an empty response without inventing products", () => {
-    expect(parseMapResponse({ code: 1, data: [makeStore()] })).toHaveLength(1);
+    const [store] = parseMapResponse({ code: 1, data: [makeStore()] });
+    expect(store.info[0].categories[0].products[0].code).toBe("0065108");
     expect(parseMapResponse({ code: 1, data: [] })).toEqual([]);
+    expect(parseMapResponse({
+      code: 1,
+      data: [makeStore({ info: [{
+        name: "友善食光",
+        categories: [{ name: "食品", products: [{ name: "未附商品代碼", qty: 0 }] }],
+      }] })],
+    })[0].info[0].categories[0].products[0].code).toBeUndefined();
   });
 
   it("reports service errors and changed or ambiguous response formats", () => {
@@ -37,6 +46,72 @@ describe("official map response", () => {
         }],
       }),
     ).toThrow(/回傳格式已變更/);
+    expect(() => parseMapResponse({
+      code: 1,
+      data: [makeStore({ info: [{
+        name: "美味挖寶",
+        categories: [{ name: "食品", products: [{ name: "商品", code: "abc" }] }],
+      }] })],
+    })).toThrow(/回傳格式已變更/);
+  });
+
+  describe("MapProductImageClient", () => {
+    const officialUrl = "https://delivery-prod-img.family.com.tw/product/0065108.png?v=202503191602";
+
+    it("requests only the official endpoint on demand and accepts an official HTTPS image", async () => {
+      const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ code: 1, data: { imageUrl: officialUrl } })),
+      );
+      const client = new MapProductImageClient(request);
+      expect(request).not.toHaveBeenCalled();
+      expect(await client.loadImage("0065108")).toBe(officialUrl);
+      expect(request).toHaveBeenCalledTimes(1);
+      const [url, options] = request.mock.calls[0];
+      expect(url).toBe("https://stamp.family.com.tw/api/maps/MapProductImage?productId=0065108");
+      expect(options).toMatchObject({
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+      });
+      await expect(client.loadImage("0065108&redirect=https://evil.example")).rejects
+        .toThrow(/代碼格式無效/);
+      expect(request).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      "javascript:alert(1)",
+      "http://delivery-prod-img.family.com.tw/product/0065108.png",
+      "https://delivery-prod-img.family.com.tw.evil.example/product/0065108.png",
+      "https://user@delivery-prod-img.family.com.tw/product/0065108.png",
+      "https://delivery-prod-img.family.com.tw:444/product/0065108.png",
+    ])("refuses an unsafe image URL: %s", async (imageUrl) => {
+      const client = new MapProductImageClient(async () =>
+        new Response(JSON.stringify({ code: 1, data: { imageUrl } })),
+      );
+      await expect(client.loadImage("0065108")).rejects.toThrow(/圖片網址/);
+    });
+
+    it("reports missing images, API failures and invalid responses explicitly", async () => {
+      const clientFor = (payload: unknown) => new MapProductImageClient(async () =>
+        new Response(JSON.stringify(payload)),
+      );
+      await expect(clientFor({ code: 1, data: {} }).loadImage("0065108"))
+        .rejects.toThrow(/未提供/);
+      await expect(clientFor({ code: 1, data: { imageUrl: null } }).loadImage("0065108"))
+        .rejects.toThrow(/未提供/);
+      await expect(clientFor({ code: 0 }).loadImage("0065108"))
+        .rejects.toThrow(/代碼 0/);
+      await expect(clientFor({ code: 1, data: { imageUrl: 42 } }).loadImage("0065108"))
+        .rejects.toThrow(/格式已變更/);
+      await expect(new MapProductImageClient(async () => new Response("not-json"))
+        .loadImage("0065108")).rejects.toThrow(/JSON/);
+      await expect(new MapProductImageClient(async () => new Response("", { status: 503 }))
+        .loadImage("0065108")).rejects.toThrow(/HTTP 503/);
+      await expect(new MapProductImageClient(async () => { throw new TypeError("offline"); })
+        .loadImage("0065108")).rejects.toThrow(/無法連線/);
+    });
   });
 });
 

@@ -37,13 +37,31 @@ describe("store merging by stable code", () => {
     expect(merged[0].code).toBe("018558");
     expect(merged[0].name).toBe("全家台鐵西新店名");
     expect(merged[0].sources.treasure?.products).toEqual([
-      { name: "惜—北海道玉米濃湯洋芋片", quantity: 2, category: "美味挖寶" },
+      {
+        name: "惜—北海道玉米濃湯洋芋片",
+        quantity: 2,
+        category: "美味挖寶",
+        groupName: "美味挖寶",
+        code: "0065108",
+      },
     ]);
     expect(merged[0].sources.food).toEqual({
       updatedAt: "2026-10-04T04:05:00+08:00",
       products: [
-        { name: "鮮奶", quantity: 0, category: "鮮食" },
-        { name: "飯糰", quantity: undefined, category: "鮮食" },
+        {
+          name: "鮮奶",
+          quantity: 0,
+          category: "鮮食",
+          groupName: "友善食光",
+          code: undefined,
+        },
+        {
+          name: "飯糰",
+          quantity: undefined,
+          category: "鮮食",
+          groupName: "友善食光",
+          code: undefined,
+        },
       ],
     });
   });
