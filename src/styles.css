@@ -1260,6 +1260,8 @@ ul {
 }
 
 .price-note-controls--inline {
+  width: auto;
+  max-width: 100%;
   flex: 0 1 auto;
   padding: 0;
   border: 0;
@@ -1271,8 +1273,36 @@ ul {
   border: 0;
 }
 
+.price-note-controls--inline input {
+  width: min(100%, 13ch);
+}
+
 .price-note-controls__edit {
   margin-top: 8px;
+}
+
+.price-note-controls--inline .price-note-controls__edit {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 44px;
+  align-items: center;
+  margin-top: 5px;
+  padding: 6px 9px;
+  border-color: #cadbd0;
+  background: transparent;
+  color: #3d6b5c;
+  font-weight: 700;
+}
+
+.price-note-controls--inline .price-note-controls__actions button {
+  padding: 6px 9px;
+  font-weight: 700;
+}
+
+.price-note-controls--inline .price-note-controls__actions button[type="submit"] {
+  border-color: #b9d7cb;
+  background: #e5f3eb;
+  color: #165f53;
 }
 
 .price-note-controls__actions button[type="submit"] {
@@ -1614,14 +1644,21 @@ button.favorite-button:hover {
 }
 
 .product-list__prices {
+  display: inline-block;
   min-width: 0;
-  width: 100%;
+  max-width: 100%;
   margin-top: 8px;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.product-list__prices--receipt {
+  display: block;
+  width: 100%;
   padding: 10px;
   border: 1px solid #e5dccb;
   border-radius: 9px;
   background: #fffdf9;
-  overflow-wrap: anywhere;
 }
 
 .product-list__receipt-price {

@@ -290,7 +290,7 @@ function PriceNoteControls({
         if (detailsRef.current) detailsRef.current.open = false;
       } else {
         focusAfterAction.current = "input";
-        setEditing(false);
+        setPriceText("");
       }
     } catch (cause) {
       if (!(cause instanceof PriceNoteValidationError)) {
@@ -335,24 +335,22 @@ function PriceNoteControls({
         {error && <p id={errorId} class="inline-alert" role="alert">{error}</p>}
         <div class="price-note-controls__actions">
           <button type="submit">儲存原價</button>
-          {(manager || note) && (
-            <button
-              type="button"
-              onClick={() => {
-                setConfirmClear(false);
-                setError(null);
-                if (manager) {
-                  if (detailsRef.current) detailsRef.current.open = false;
-                  summaryRef.current?.focus();
-                } else {
-                  focusAfterAction.current = "edit";
-                  setEditing(false);
-                }
-              }}
-            >
-              取消
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => {
+              setConfirmClear(false);
+              setError(null);
+              if (manager) {
+                if (detailsRef.current) detailsRef.current.open = false;
+                summaryRef.current?.focus();
+              } else {
+                focusAfterAction.current = "edit";
+                setEditing(false);
+              }
+            }}
+          >
+            取消
+          </button>
           {note && !confirmClear && (
             <button type="button" onClick={() => setConfirmClear(true)}>清除紀錄…</button>
           )}
@@ -383,25 +381,25 @@ function PriceNoteControls({
             <p class="product-list__price">
               使用者自行輸入原價／非官方：<strong>{formatOriginalPrice(note.priceCents)}</strong>
             </p>
-            {!editing && (
-              <button
-                type="button"
-                class="price-note-controls__edit"
-                ref={editRef}
-                onClick={() => {
-                  setPriceText(String(note.priceCents / 100));
-                  setError(null);
-                  setEditing(true);
-                }}
-              >
-                修改個人原價
-              </button>
-            )}
           </>
         ) : (
           <p class="product-list__unrecorded">尚未記錄個人原價。</p>
         )}
-        {(!note || editing) && content}
+        {editing ? content : (
+          <button
+            type="button"
+            class="price-note-controls__edit"
+            ref={editRef}
+            onClick={() => {
+              setPriceText(note ? String(note.priceCents / 100) : "");
+              setError(null);
+              focusAfterAction.current = "input";
+              setEditing(true);
+            }}
+          >
+            {note ? "修改個人原價" : "記錄個人原價"}
+          </button>
+        )}
         {priceNotes.storageWarning && (
           <p class="inline-alert" role="alert">{priceNotes.storageWarning}</p>
         )}
@@ -587,7 +585,7 @@ function SourceDetails({
                         <small>未提供商品代碼，無法紀錄原價。</small>
                       )}
                       {imageCode && (
-                        <div class="product-list__prices">
+                        <div class={`product-list__prices${reference ? " product-list__prices--receipt" : ""}`}>
                           {reference && (
                             <div class="product-list__receipt-price">
                               <p>收據原價：<strong>{formatOriginalPrice(reference.originalCents)}</strong></p>

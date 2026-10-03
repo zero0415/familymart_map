@@ -240,6 +240,11 @@ describe("navigable store-finder pages and catalog-backed nearby stores", () => 
     expect(distant.textContent).toContain("未回傳此店商品資料，不代表缺貨");
     expect(distant.querySelector(".product-list__receipt-price")?.textContent).toContain("收據原價");
     expect(distant.querySelector(".product-list__image-button")).not.toBeNull();
+    expect(distant.querySelector("#price-input-nearby-012345-treasure-0-0065108")).toBeNull();
+    act(() => distant.querySelector<HTMLButtonElement>(".price-note-controls__edit")!.click());
+    expect(document.activeElement).toBe(
+      distant.querySelector("#price-input-nearby-012345-treasure-0-0065108"),
+    );
     input("#price-input-nearby-012345-treasure-0-0065108", "49.50");
     submit("#price-input-nearby-012345-treasure-0-0065108");
     expect(JSON.parse(window.localStorage.getItem(PRICE_NOTES_KEY)!)[0].priceCents).toBe(4_950);

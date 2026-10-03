@@ -777,6 +777,14 @@ describe("interactive store finder", () => {
   });
 
   describe("personal original price notes", () => {
+    function openInlinePriceEditor(row: HTMLElement): HTMLInputElement {
+      const trigger = row.querySelector<HTMLButtonElement>(".price-note-controls__edit")!;
+      act(() => trigger.click());
+      const input = row.querySelector<HTMLInputElement>(".price-note-controls--inline input")!;
+      expect(document.activeElement).toBe(input);
+      return input;
+    }
+
     it("keeps both price lists closed by default with headings, counts and explanations visible", () => {
       act(() => render(<App client={fixtureClient()} geolocation={null} />, root));
 
@@ -856,9 +864,14 @@ describe("interactive store finder", () => {
           .toContain("該筆五折推算：NT$20");
         expect(row.querySelector(".product-list__receipt-price")?.textContent)
           .toContain("使用者提供收據資料來源：2026-10-02");
-        expect(row.querySelector(".product-list__prices .product-list__unrecorded")?.textContent)
+        const prices = row.querySelector(".product-list__prices")!;
+        expect(prices.classList.contains("product-list__prices--receipt")).toBe(true);
+        expect(prices.querySelector(".product-list__unrecorded")?.textContent)
           .toContain("尚未記錄個人原價");
-        expect(row.querySelector<HTMLInputElement>(".product-list__prices input")?.value).toBe("");
+        expect(prices.querySelector("input")).toBeNull();
+        expect(prices.querySelector(".price-note-controls__edit")?.textContent)
+          .toContain("記錄個人原價");
+        expect(openInlinePriceEditor(row).value).toBe("");
         expect(row.querySelector(".product-list__prices .price-note-controls")?.tagName).toBe("DIV");
         expect(row.querySelector(".product-list__prices label")?.textContent)
           .toContain("使用者自行輸入原價");
@@ -875,7 +888,7 @@ describe("interactive store finder", () => {
       expect(productRow(favorite, "food", "友善便當")
         .querySelector(".product-list__receipt-price")).toBeNull();
       expect(productRow(favorite, "food", "友善便當")
-        .querySelector(".product-list__prices input")).not.toBeNull();
+        .querySelector(".price-note-controls__edit")?.textContent).toContain("記錄個人原價");
       expect(productRow(favorite, "food", "友善便當")
         .querySelector(".product-list__image-button")).not.toBeNull();
       expect(root.querySelector("#price-notes .price-manager")).toBeNull();
@@ -940,8 +953,11 @@ describe("interactive store finder", () => {
       const row = productRow(favoriteCard("全家台鐵西店"), "food", "友善便當");
       const prices = row.querySelector(".product-list__prices")!;
       expect(prices.querySelector(".product-list__receipt-price")).toBeNull();
+      expect(prices.classList.contains("product-list__prices--receipt")).toBe(false);
+      expect(prices.querySelector("input")).toBeNull();
+      expect(prices.querySelector(".price-note-controls__edit")?.textContent).toContain("記錄個人原價");
       const input = "#price-input-favorite-018558-food-0-0789123";
-      expect(root.querySelector<HTMLInputElement>(input)?.value).toBe("");
+      expect(openInlinePriceEditor(row).value).toBe("");
       setInput(input, "58.75");
       submit(input);
       expect(prices.querySelector(".product-list__price")?.textContent).toContain("NT$58.75");
@@ -955,6 +971,53 @@ describe("interactive store finder", () => {
       expect(root.querySelector("#price-notes [role='status']")?.closest("details")).toBeNull();
       act(() => notes.querySelector("summary")!.click());
       expect(notes.querySelector(".price-manager")?.textContent).toContain("NT$58.75");
+    });
+
+    it("opens the small inline price editor on demand, returns focus on cancel, and keeps the manager separate", async () => {
+      saveFixtureFavorite();
+      act(() => render(<App client={productFixtureClient()} geolocation={null} />, root));
+      await settleQueries();
+      act(() => favoriteCard("全家台鐵西店").querySelector<HTMLElement>("details > summary")!.click());
+
+      const row = productRow(favoriteCard("全家台鐵西店"), "food", "友善便當");
+      const prices = row.querySelector<HTMLElement>(".product-list__prices")!;
+      const editor = prices.querySelector<HTMLElement>(".price-note-controls--inline")!;
+      const trigger = editor.querySelector<HTMLButtonElement>(".price-note-controls__edit")!;
+      expect(prices.classList.contains("product-list__prices--receipt")).toBe(false);
+      expect(editor.querySelector("form")).toBeNull();
+      expect(trigger.textContent).toContain("記錄個人原價");
+
+      const input = openInlinePriceEditor(row);
+      expect(input.value).toBe("");
+      act(() => editor.querySelector<HTMLButtonElement>(".price-note-controls__actions button[type='button']")!.click());
+      expect(editor.querySelector("input")).toBeNull();
+      expect(document.activeElement).toBe(editor.querySelector(".price-note-controls__edit"));
+      expect(window.localStorage.getItem(PRICE_NOTES_KEY)).toBeNull();
+
+      openInlinePriceEditor(row);
+      const inputId = "#price-input-favorite-018558-food-0-0789123";
+      setInput(inputId, "0");
+      submit(inputId);
+      expect(editor.querySelector("[role='alert']")?.textContent).toContain("正數原價");
+      expect(root.querySelector<HTMLInputElement>(inputId)?.getAttribute("aria-invalid")).toBe("true");
+      expect(document.activeElement).toBe(root.querySelector(inputId));
+
+      act(() => editor.querySelector<HTMLButtonElement>(".price-note-controls__actions button[type='button']")!.click());
+      expect(editor.querySelector("[role='alert']")).toBeNull();
+      expect(document.activeElement).toBe(editor.querySelector(".price-note-controls__edit"));
+      expect(openInlinePriceEditor(row).value).toBe("");
+      setInput(inputId, "63.75");
+      submit(inputId);
+      expect(prices.querySelector(".product-list__price")?.textContent).toContain("NT$63.75");
+      expect(editor.querySelector("input")).toBeNull();
+      expect(editor.querySelector(".price-note-controls__edit")?.textContent).toContain("修改個人原價");
+      expect(document.activeElement).toBe(editor.querySelector(".price-note-controls__edit"));
+      expect(JSON.parse(window.localStorage.getItem(PRICE_NOTES_KEY)!)).toEqual([
+        { code: "0789123", name: "友善便當", priceCents: 6375 },
+      ]);
+      const manager = root.querySelector<HTMLDetailsElement>("#price-notes .price-note-controls")!;
+      expect(manager.classList.contains("price-note-controls--inline")).toBe(false);
+      expect(manager.querySelector("summary")?.textContent).toContain("修改或清除個人原價");
     });
 
     it("requires confirmation to clear a product note and returns focus to its inline input", async () => {
@@ -981,6 +1044,7 @@ describe("interactive store finder", () => {
       expect(window.localStorage.getItem(PRICE_NOTES_KEY)).toBe("[]");
       expect(row.querySelector(".product-list__receipt-price")?.textContent).toContain("收據原價：NT$39");
       expect(row.querySelector(".product-list__unrecorded")?.textContent).toContain("尚未記錄");
+      expect(row.querySelector<HTMLInputElement>(".product-list__prices input")?.value).toBe("");
       expect(document.activeElement).toBe(row.querySelector(".product-list__prices input"));
       expect(root.querySelector<HTMLDetailsElement>("#price-notes .price-list-details")?.open)
         .toBe(false);
@@ -1007,6 +1071,8 @@ describe("interactive store finder", () => {
       const editor = coded.querySelector<HTMLElement>(".price-note-controls--inline")!;
       expect(editor.closest(".product-list__prices")).not.toBeNull();
       expect(editor.querySelector("summary")).toBeNull();
+      expect(editor.querySelector("input")).toBeNull();
+      expect(openInlinePriceEditor(coded).value).toBe("");
       const amount = "#price-input-favorite-018558-treasure-0-0065108";
       expect(root.querySelector<HTMLInputElement>(amount)?.inputMode).toBe("decimal");
       expect(root.querySelector<HTMLInputElement>(amount)?.getAttribute("aria-describedby"))
@@ -1144,7 +1210,8 @@ describe("interactive store finder", () => {
         .toContain("為避免覆寫原資料");
       const editor = productRow(favoriteCard("全家台鐵西店"), "treasure", "惜—食品甲")
         .querySelector<HTMLElement>(".price-note-controls--inline")!;
-      expect(editor.querySelector("input")).not.toBeNull();
+      expect(editor.querySelector("input")).toBeNull();
+      openInlinePriceEditor(productRow(favoriteCard("全家台鐵西店"), "treasure", "惜—食品甲"));
       setInput("#price-input-favorite-018558-treasure-0-0065108", "39");
       submit("#price-input-favorite-018558-treasure-0-0065108");
       expect(root.querySelector("#price-notes .price-manager")?.textContent).toContain("NT$39");
@@ -1202,7 +1269,8 @@ describe("interactive store finder", () => {
         }
         const editor = productRow(favoriteCard("全家台鐵西店"), "treasure", "惜—食品甲")
           .querySelector<HTMLElement>(".price-note-controls--inline")!;
-        expect(editor.querySelector("input")).not.toBeNull();
+        expect(editor.querySelector("input")).toBeNull();
+        openInlinePriceEditor(productRow(favoriteCard("全家台鐵西店"), "treasure", "惜—食品甲"));
         setInput("#price-input-favorite-018558-treasure-0-0065108", "39");
         submit("#price-input-favorite-018558-treasure-0-0065108");
         expect(root.querySelector("#price-notes .price-manager")?.textContent).toContain("NT$39");
