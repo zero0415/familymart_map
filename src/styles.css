@@ -897,6 +897,7 @@ ul {
   margin-top: 8px;
   font-size: 26px;
   letter-spacing: -0.045em;
+  scroll-margin-top: 18px;
 }
 
 .result-section__heading h2 span {

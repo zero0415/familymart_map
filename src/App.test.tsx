@@ -4,7 +4,7 @@ import type { ComponentProps } from "preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App as StoreFinder } from "./App";
 import { MapApiError, type MapDataClient, type MapQuery, type MapResult } from "./api";
-import type { DirectoryDataClient, StoreDirectory } from "./directory";
+import { DirectoryError, type DirectoryDataClient, type StoreDirectory } from "./directory";
 import { FAVORITES_KEY } from "./favorites";
 import type { GeolocationClient } from "./location";
 import { PRICE_NOTES_KEY } from "./price-notes";
@@ -262,6 +262,314 @@ describe("interactive store finder", () => {
     });
     expect(root.textContent).toContain("未取得定位權限");
     expect(document.activeElement).toBe(root.querySelector("#area"));
+  });
+
+  describe("navigating to nearby results after a valid search", () => {
+    let scroll = vi.fn();
+    let originalScroll: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      originalScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+      scroll = vi.fn();
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        value: scroll,
+      });
+      vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false })));
+    });
+
+    afterEach(() => {
+      if (originalScroll) {
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScroll);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      }
+      vi.unstubAllGlobals();
+    });
+
+    function expectResultJump(behavior: ScrollBehavior = "smooth") {
+      const title = root.querySelector<HTMLHeadingElement>("#nearby-title")!;
+      expect(document.activeElement).toBe(title);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(scroll.mock.contexts[0]).toBe(title);
+      expect(scroll).toHaveBeenCalledWith({ block: "start", behavior });
+    }
+
+    it("focuses the results after successful geolocation, including while data is loading", async () => {
+      const getCurrentPosition = vi.fn((success: PositionCallback) => success({
+        coords: {
+          latitude: 25.04631,
+          longitude: 121.517415,
+          accuracy: 10,
+          altitude: null,
+          altitudeAccuracy: null,
+          heading: null,
+          speed: null,
+          toJSON: () => ({}),
+        },
+        timestamp: Date.now(),
+        toJSON: () => ({}),
+      }));
+      const client = fixtureClient();
+      act(() => render(<App client={client} geolocation={{ getCurrentPosition }} />, root));
+      go("#nearby");
+      scroll.mockClear();
+      const focus = vi.spyOn(HTMLElement.prototype, "focus");
+
+      await act(async () => {
+        button(/使用目前位置/).click();
+        await Promise.resolve();
+      });
+      expect(getCurrentPosition).toHaveBeenCalledTimes(1);
+      expect(root.querySelector("#nearby .result-section__heading p")?.textContent)
+        .toContain("目前位置周邊 3 公里");
+      expect(root.querySelector("#nearby .loading-state")).not.toBeNull();
+      expectResultJump();
+      expect(focus.mock.contexts.at(-1)).toBe(root.querySelector("#nearby-title"));
+      expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+
+      await settleQueries();
+      expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
+        position: { latitude: 25.04631, longitude: 121.517415 },
+      }));
+      expect(root.querySelector("#nearby .nearby-row")).not.toBeNull();
+      expectResultJump();
+    });
+
+    it("uses the official Taipei MRT coordinates and re-jumps for a cached repeated search", async () => {
+      const taipei = makeStore();
+      const cityHall = makeStore({
+        oldPKey: "019999",
+        name: "全家市政府站店",
+        address: "臺北市信義區忠孝東路5段",
+        latitude: 25.041135,
+        longitude: 121.565685,
+      });
+      const client: MapDataClient = {
+        load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => ({
+          stores: source === "treasure" ? [cityHall, taipei] : [],
+          fetchedAt: Date.now(),
+          fromCache: true,
+        })),
+      };
+      act(() => render(<App client={client} geolocation={null} />, root));
+      go("#nearby");
+      scroll.mockClear();
+      expect(root.querySelectorAll("#area optgroup")).toHaveLength(6);
+      expect(root.querySelector("optgroup[label='臺北捷運・淡水信義線'] option[value='mrt-r10']")
+        ?.textContent).toBe("台北車站（捷運站）");
+      expect(root.querySelector("optgroup[label='臺北捷運・板南線'] option[value='mrt-bl18']")
+        ?.textContent).toBe("市政府（捷運站）");
+      expect(root.querySelector("optgroup[label='地區中心'] option[value='banqiao']"))
+        .not.toBeNull();
+
+      setInput("#area", "mrt-r10");
+      submit("#area");
+      expectResultJump();
+      await settleQueries();
+      expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
+        position: { latitude: 25.04631, longitude: 121.517415 },
+      }));
+      expect(root.querySelector("#nearby .result-count")?.textContent).toContain("3 公里內 1 間店");
+      expect(root.querySelector("#nearby .store-list")?.textContent).toContain("全家台鐵西店");
+      expect(root.querySelector("#nearby .store-list")?.textContent).not.toContain("全家市政府站店");
+      expect(root.querySelector("#nearby .source-status--treasure")?.textContent).toContain("本頁快取");
+      expectResultJump();
+
+      scroll.mockClear();
+      submit("#area");
+      expectResultJump();
+      await settleQueries();
+      expect(client.load).toHaveBeenCalledTimes(2);
+      expectResultJump();
+
+      scroll.mockClear();
+      setInput("#area", "mrt-bl18");
+      submit("#area");
+      expectResultJump();
+      await settleQueries();
+      expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
+        position: { latitude: 25.041135, longitude: 121.565685 },
+      }));
+      expect(root.querySelector("#nearby .store-list")?.textContent).toContain("全家市政府站店");
+      expect(root.querySelector("#nearby .store-list")?.textContent).not.toContain("全家台鐵西店");
+      expectResultJump();
+
+      scroll.mockClear();
+      act(() => button(/重新查詢商品地圖/).click());
+      await settleQueries();
+      expect(client.load).toHaveBeenCalledTimes(6);
+      expect(scroll).not.toHaveBeenCalled();
+    });
+
+    it("keeps postal results sorted by name, without claiming distance or asking for location", async () => {
+      vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+      const client: MapDataClient = {
+        load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => ({
+          stores: source === "treasure"
+            ? [
+                makeStore({ oldPKey: "019999", name: "全家甲店" }),
+                makeStore({ name: "全家乙店" }),
+              ]
+            : [],
+          fetchedAt: Date.now(),
+          fromCache: true,
+        })),
+      };
+      act(() => render(<App client={client} geolocation={null} />, root));
+      go("#nearby");
+      scroll.mockClear();
+
+      setInput("#postal-code", "100");
+      submit("#postal-code");
+      expectResultJump("auto");
+      expect(root.querySelector("#nearby-title")?.textContent).toBe("分店搜尋結果");
+      expect(root.querySelector("#nearby .result-section__heading p")?.textContent)
+        .toContain("郵遞區號 100・依店名排序・僅含商品地圖回傳的店");
+      await settleQueries();
+      expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
+        postalCode: "100",
+        favoriteCodes: [],
+      }));
+      expect(client.load).not.toHaveBeenCalledWith(expect.objectContaining({ position: expect.anything() }));
+      const names = [...root.querySelectorAll<HTMLElement>("#nearby .nearby-row h3")]
+        .map((row) => row.textContent!);
+      expect(names).toHaveLength(2);
+      expect(names).toEqual([...names].sort((first, second) => first.localeCompare(second, "zh-TW")));
+      expect(root.querySelector("#nearby .result-count")?.textContent)
+        .toContain("非完整名錄");
+      expect(root.querySelector("#nearby .nearby-row__distance")).toBeNull();
+      expectResultJump("auto");
+
+      scroll.mockClear();
+      submit("#postal-code");
+      expectResultJump("auto");
+      await settleQueries();
+      expect(client.load).toHaveBeenCalledTimes(2);
+
+      scroll.mockClear();
+      go("#favorites");
+      expect(scroll.mock.contexts.at(-1)).toBe(root.querySelector("#favorites-title"));
+      await act(async () => {
+        const changed = new Promise<void>((resolve) => {
+          window.addEventListener("hashchange", () => resolve(), { once: true });
+        });
+        window.history.back();
+        await changed;
+      });
+      expect(window.location.hash).toBe("#nearby");
+      expect(document.activeElement).toBe(root.querySelector("#nearby-page-title"));
+      expect(scroll.mock.contexts.at(-1)).toBe(root.querySelector("#nearby-page-title"));
+      expect(scroll.mock.contexts).not.toContain(root.querySelector("#nearby-title"));
+      expect(client.load).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ["denied", 1, "未取得定位權限"],
+      ["timeout", 3, "定位逾時"],
+    ])("leaves invalid forms and %s geolocation in the controls", async (_name, code, warning) => {
+      const getCurrentPosition = vi.fn(
+        (_success: PositionCallback, error?: PositionErrorCallback | null) => error?.({
+          code,
+          message: warning,
+          PERMISSION_DENIED: 1,
+          POSITION_UNAVAILABLE: 2,
+          TIMEOUT: 3,
+        }),
+      );
+      const client = fixtureClient();
+      act(() => render(<App client={client} geolocation={{ getCurrentPosition }} />, root));
+      go("#nearby");
+      scroll.mockClear();
+
+      const area = root.querySelector<HTMLSelectElement>("#area")!;
+      act(() => area.focus());
+      submit("#area");
+      expect(root.querySelector("#location [role='alert']")?.textContent).toContain("請先選擇");
+      expect(document.activeElement).toBe(area);
+      expect(scroll).not.toHaveBeenCalled();
+
+      setInput("#latitude", "91");
+      setInput("#longitude", "121.5171");
+      const longitude = root.querySelector<HTMLInputElement>("#longitude")!;
+      act(() => longitude.focus());
+      submit("#longitude");
+      expect(root.querySelector("#location [role='alert']")?.textContent).toContain("座標無效");
+      expect(document.activeElement).toBe(longitude);
+      expect(scroll).not.toHaveBeenCalled();
+
+      setInput("#postal-code", "10a");
+      const postal = root.querySelector<HTMLInputElement>("#postal-code")!;
+      act(() => postal.focus());
+      submit("#postal-code");
+      expect(root.querySelector(".control-panel--postal [role='alert']")?.textContent)
+        .toContain("請輸入三位數");
+      expect(document.activeElement).toBe(postal);
+      expect(scroll).not.toHaveBeenCalled();
+
+      await act(async () => {
+        button(/使用目前位置/).click();
+        await Promise.resolve();
+      });
+      expect(getCurrentPosition).toHaveBeenCalledTimes(1);
+      expect(root.querySelector("#location [role='alert']")?.textContent).toContain(warning);
+      expect(document.activeElement).toBe(area);
+      expect(scroll).not.toHaveBeenCalled();
+      expect(client.load).not.toHaveBeenCalled();
+    });
+
+    it.each(["empty", "error"] as const)(
+      "keeps a focusable destination for %s responses without a second jump",
+      async (outcome) => {
+        const client: MapDataClient = {
+          load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => {
+            if (outcome === "error" && source === "food") {
+              throw new MapApiError("network", "友善食光暫時無法讀取");
+            }
+            return { stores: [], fetchedAt: Date.now(), fromCache: false };
+          }),
+        };
+        act(() => render(<App client={client} geolocation={null} />, root));
+        go("#nearby");
+        scroll.mockClear();
+
+        setInput("#postal-code", "100");
+        submit("#postal-code");
+        expectResultJump();
+        await settleQueries();
+        expect(root.querySelector("#nearby .empty-state")?.textContent)
+          .toContain(outcome === "error" ? "部分地圖資料暫時無法確認" : "目前沒有回傳此郵遞區號的店");
+        expectResultJump();
+      },
+    );
+
+    it("keeps the result heading visible during directory and map errors", async () => {
+      const client: MapDataClient = {
+        load: vi.fn(async () => {
+          throw new MapApiError("service", "地圖讀取失敗");
+        }),
+      };
+      const failedDirectory: DirectoryDataClient = {
+        load: vi.fn(async () => {
+          throw new DirectoryError("network", "店舖目錄讀取失敗");
+        }),
+      };
+      act(() => render(
+        <App client={client} directoryClient={failedDirectory} geolocation={null} />,
+        root,
+      ));
+      go("#nearby");
+      scroll.mockClear();
+      setInput("#area", "taipei");
+      submit("#area");
+      expectResultJump();
+      await settleQueries();
+      expect(root.querySelector("#nearby .directory-error")?.textContent)
+        .toContain("店舖目錄讀取失敗");
+      expect(root.querySelector("#nearby .empty-state")?.textContent)
+        .toContain("3 公里店舖名單暫時無法確認");
+      expectResultJump();
+    });
   });
 
   describe("favorite treasure filters", () => {

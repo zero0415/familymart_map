@@ -1,9 +1,63 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  AREA_PRESETS,
   parseCoordinates,
   requestLocation,
+  TAIPEI_MRT_LINES,
+  TAIPEI_MRT_STATIONS,
   type GeolocationClient,
 } from "./location";
+
+describe("Taipei MRT station presets", () => {
+  it("groups Taipei stations by their first line and keeps verified interchange coordinates", () => {
+    expect(TAIPEI_MRT_LINES.map((line) => line.label)).toEqual([
+      "文湖線", "淡水信義線", "松山新店線", "中和新蘆線", "板南線",
+    ]);
+    expect(TAIPEI_MRT_STATIONS.find((station) => station.id === "mrt-r10")).toMatchObject({
+      label: "台北車站（捷運站）",
+      latitude: 25.04631,
+      longitude: 121.517415,
+    });
+    expect(TAIPEI_MRT_STATIONS.find((station) => station.id === "mrt-bl18")).toMatchObject({
+      label: "市政府（捷運站）",
+      latitude: 25.041135,
+      longitude: 121.565685,
+    });
+    expect(TAIPEI_MRT_STATIONS.filter((station) => station.label === "南港展覽館（捷運站）"))
+      .toHaveLength(1);
+    expect(AREA_PRESETS.some((area) => area.id === "taipei")).toBe(true);
+    expect(AREA_PRESETS.some((area) => area.id === "banqiao")).toBe(true);
+  });
+
+  it("has no repeated stations or known non-Taipei stops, and coordinates stay within Taipei", () => {
+    const ids = TAIPEI_MRT_STATIONS.map((station) => station.id);
+    const names = TAIPEI_MRT_STATIONS.map((station) => station.label);
+    const coordinates = TAIPEI_MRT_STATIONS.map(
+      (station) => `${station.latitude},${station.longitude}`,
+    );
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(new Set(names).size).toBe(names.length);
+    expect(new Set(coordinates).size).toBe(coordinates.length);
+    for (const [line, prefix] of TAIPEI_MRT_LINES.map((group, index) =>
+      [group, ["br", "r", "g", "o", "bl"][index]] as const
+    )) {
+      expect(line.stations.length).toBeGreaterThan(0);
+      for (const station of line.stations) {
+        expect(station.id).toMatch(new RegExp(`^mrt-${prefix}\\d`));
+        expect(station.latitude).toBeGreaterThanOrEqual(24.98);
+        expect(station.latitude).toBeLessThanOrEqual(25.15);
+        expect(station.longitude).toBeGreaterThanOrEqual(121.46);
+        expect(station.longitude).toBeLessThanOrEqual(121.63);
+      }
+    }
+    for (const id of ["mrt-r26", "mrt-g04", "mrt-o13", "mrt-bl09", "mrt-bl23"]) {
+      expect(ids).not.toContain(id);
+    }
+    for (const name of ["淡水", "大坪林", "頂溪", "板橋"]) {
+      expect(names).not.toContain(`${name}（捷運站）`);
+    }
+  });
+});
 
 describe("location and no-permission fallback", () => {
   it("validates manual coordinates instead of treating blank fields as zero", () => {

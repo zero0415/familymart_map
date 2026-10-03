@@ -34,6 +34,10 @@ import {
   FAVORITES_REFERENCE_POSITION,
   parseCoordinates,
   requestLocation,
+  TAIPEI_MRT_LINES,
+  TAIPEI_MRT_STATION_DATE,
+  TAIPEI_MRT_STATION_SOURCE_URL,
+  TAIPEI_MRT_STATIONS,
   type GeolocationClient,
 } from "./location";
 import {
@@ -923,6 +927,7 @@ export function App({
   const [lookups, setLookups] = useState<Record<string, Record<MapSource, LoadState>>>({});
   const [center, setCenter] = useState<SearchCenter | null>(null);
   const [postalCode, setPostalCode] = useState<string | null>(null);
+  const [resultJump, setResultJump] = useState(0);
   const [states, setStates] = useState<Record<MapSource, LoadState>>(emptyStates);
   const [favoriteStates, setFavoriteStates] = useState<Record<MapSource, LoadState>>(emptyStates);
   const [locating, setLocating] = useState(false);
@@ -954,6 +959,7 @@ export function App({
   const lookupVersions = useRef(new Map<string, number>());
   const areaSelectRef = useRef<HTMLSelectElement>(null);
   const postalInputRef = useRef<HTMLInputElement>(null);
+  const nearbyTitleRef = useRef<HTMLHeadingElement>(null);
   const removeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const cancelRemovalRef = useRef<HTMLButtonElement>(null);
   const managerSummaryRef = useRef<HTMLElement>(null);
@@ -1007,6 +1013,16 @@ export function App({
     target?.scrollIntoView?.({ block: "start" });
     target?.focus({ preventScroll: true });
   }, [activePage, navigation.hash]);
+
+  useLayoutEffect(() => {
+    if (!resultJump || activePage !== "nearby") return;
+    nearbyTitleRef.current?.focus({ preventScroll: true });
+    nearbyTitleRef.current?.scrollIntoView?.({
+      block: "start",
+      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+        ? "auto" : "smooth",
+    });
+  }, [resultJump]);
 
   useEffect(() => {
     if (center) requestDirectory();
@@ -1410,6 +1426,7 @@ export function App({
     setPostalCode(null);
     setPostalInput("");
     setCenter({ position, label });
+    setResultJump((count) => count + 1);
   }
 
   async function findMyLocation() {
@@ -1436,9 +1453,10 @@ export function App({
 
   function chooseArea(event: Event) {
     event.preventDefault();
-    const area = AREA_PRESETS.find((preset) => preset.id === selectedArea);
+    const area = [...AREA_PRESETS, ...TAIPEI_MRT_STATIONS]
+      .find((preset) => preset.id === selectedArea);
     if (!area) {
-      setFormError("請先選擇一個地區中心。");
+      setFormError("請先選擇一個地區中心或臺北捷運站。");
       return;
     }
     chooseCenter(
@@ -1472,6 +1490,7 @@ export function App({
     setPostalError(null);
     setCenter(null);
     setPostalCode(zip);
+    setResultJump((count) => count + 1);
   }
 
   function submitNameSearch(event: Event) {
@@ -1828,21 +1847,35 @@ export function App({
 
                 <div class="control-divider"><span>不使用定位，也能搜尋</span></div>
                 <form onSubmit={chooseArea}>
-                  <label for="area">選擇地區中心</label>
+                  <label for="area">選擇地區中心或臺北捷運站</label>
                   <select
                     id="area"
                     ref={areaSelectRef}
                     value={selectedArea}
                     onChange={(event) => setSelectedArea(event.currentTarget.value)}
                   >
-                    <option value="">請選擇地區</option>
-                    {AREA_PRESETS.map((area) => (
-                      <option key={area.id} value={area.id}>{area.label}</option>
+                    <option value="">請選擇地區或捷運站</option>
+                    <optgroup label="地區中心">
+                      {AREA_PRESETS.map((area) => (
+                        <option key={area.id} value={area.id}>{area.label}</option>
+                      ))}
+                    </optgroup>
+                    {TAIPEI_MRT_LINES.map((line) => (
+                      <optgroup key={line.label} label={`臺北捷運・${line.label}`}>
+                        {line.stations.map((station) => (
+                          <option key={station.id} value={station.id}>{station.label}</option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                   <button class="secondary-button" type="submit">搜尋此區域附近</button>
                 </form>
-                <p class="field-hint">以標示地點為中心計算 3 公里，非整個行政區。</p>
+                <p class="field-hint">以標示地點或捷運站為中心計算 3 公里，非整個行政區；轉乘站僅列一次。</p>
+                <p class="field-hint">
+                  捷運站座標：<a href={TAIPEI_MRT_STATION_SOURCE_URL} target="_blank" rel="noopener noreferrer">
+                    臺北大眾捷運公司「臺北捷運車站資料」
+                  </a>（政府資料開放授權第 1 版，{TAIPEI_MRT_STATION_DATE} 版）。
+                </p>
 
                 <form class="coordinate-form" onSubmit={chooseCoordinates}>
                   <div class="coordinate-form__fields">
@@ -2322,7 +2355,9 @@ export function App({
                       <span>{postalCode ? "⌕" : "⌖"}</span>
                       {postalCode ? "郵遞區號地圖結果" : "3 公里店舖清單"}
                     </div>
-                    <h2 id="nearby-title" tabIndex={-1}>{postalCode ? "分店搜尋結果" : "依距離排序的店家"}</h2>
+                    <h2 id="nearby-title" ref={nearbyTitleRef} tabIndex={-1}>
+                      {postalCode ? "分店搜尋結果" : "依距離排序的店家"}
+                    </h2>
                     <p>
                       {postalCode
                         ? `郵遞區號 ${postalCode}・依店名排序・僅含商品地圖回傳的店，不是完整店舖名錄`
