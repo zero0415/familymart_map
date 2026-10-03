@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "check": "tsc --noEmit",
     "test": "vitest run",
+    "update:stores": "node --experimental-strip-types scripts/update-store-directory.ts",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {

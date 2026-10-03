@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getNearby, matchesStore, mergeStores } from "./stores";
+import { getNearby, matchesStore, mergeStores, NEARBY_RADIUS_METERS, type MergedStore } from "./stores";
 import { makeStore } from "./test-fixtures";
 
 const center = { latitude: 25.0479, longitude: 121.5171 };
@@ -63,6 +63,32 @@ describe("store merging by stable code", () => {
           code: undefined,
         },
       ],
+    });
+
+    describe("complete three-kilometer directory range", () => {
+      it("includes stores 1.2-2.9 km away, excludes beyond 3 km, and sorts by measured distance", () => {
+        const latitudesPerMeter = (180 / Math.PI) / 6_371_000;
+        const atDistance = (code: string, meters: number): MergedStore => ({
+          code,
+          name: `全家${code}店`,
+          latitude: center.latitude + meters * latitudesPerMeter,
+          longitude: center.longitude,
+          sources: {},
+        });
+        const listed = getNearby([
+          atDistance("2.9km", 2_900),
+          atDistance("3.1km", 3_100),
+          atDistance("1.2km", 1_200),
+          atDistance("3.0km", 3_000),
+          atDistance("0.5km", 500),
+        ], center);
+
+        expect(NEARBY_RADIUS_METERS).toBe(3_000);
+        expect(listed.map(({ store }) => store.code)).toEqual(["0.5km", "1.2km", "2.9km", "3.0km"]);
+        expect(listed[1].distanceMeters).toBeCloseTo(1_200, 3);
+        expect(listed[2].distanceMeters).toBeCloseTo(2_900, 3);
+        expect(listed.every(({ distanceMeters }) => distanceMeters <= 3_000)).toBe(true);
+      });
     });
   });
 

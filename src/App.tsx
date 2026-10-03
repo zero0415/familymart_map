@@ -14,6 +14,15 @@ import {
   type ProductImageClient,
 } from "./api";
 import {
+  DirectoryClient,
+  DirectoryError,
+  isDirectoryStale,
+  matchesDirectoryStore,
+  type DirectoryDataClient,
+  type DirectoryStore,
+  type StoreDirectory,
+} from "./directory";
+import {
   FavoriteStorageError,
   readFavorites,
   STORE_CODE_PATTERN,
@@ -49,6 +58,7 @@ import {
   getNearby,
   matchesStore,
   mergeStores,
+  NEARBY_RADIUS_METERS,
   type MergedStore,
   type NearbyStore,
   type SourceProducts,
@@ -68,6 +78,40 @@ type LoadState =
   | { status: "ready"; result: MapResult }
   | { status: "error"; message: string };
 
+type DirectoryLoadState =
+  | { status: "idle" | "loading" }
+  | { status: "ready"; directory: StoreDirectory }
+  | { status: "error"; message: string };
+
+type Page = "home" | "nearby" | "favorites" | "receipt-prices" | "price-notes" | "about";
+
+function pageFromHash(hash: string, current: Page = "home"): Page {
+  switch (hash) {
+    case "#nearby":
+    case "#location":
+      return "nearby";
+    case "#favorites":
+    case "#manage-favorites":
+      return "favorites";
+    case "#receipt-prices":
+    case "#price-notes":
+    case "#about":
+      return hash.slice(1) as Page;
+    case "#top":
+    case "#main-content":
+      return current;
+    default:
+      return "home";
+  }
+}
+
+function namesAgree(first: string, second: string): boolean {
+  return first.normalize("NFKC").replace(/\s+/g, "") ===
+    second.normalize("NFKC").replace(/\s+/g, "");
+}
+
+const IDENTITY_ERROR = "商品地圖回傳的店代碼、店名或座標與店舖目錄／既有分店資訊不符，已停止顯示這間店的商品；請至官方地圖核對。";
+
 interface SearchCenter {
   position: Coordinates;
   label: string;
@@ -75,12 +119,14 @@ interface SearchCenter {
 
 interface AppProps {
   client?: MapDataClient;
+  directoryClient?: DirectoryDataClient;
   imageClient?: ProductImageClient;
   geolocation?: GeolocationClient | null;
   storage?: Storage | null;
 }
 
 const defaultClient = new MapClient();
+const defaultDirectoryClient = new DirectoryClient();
 const defaultImageClient = new MapProductImageClient();
 const REFRESH_INTERVAL_MS = 60_000;
 const CATEGORY_FILTER_OPTIONS = [
@@ -708,7 +754,7 @@ function NearbyDiagram({
   center: Coordinates;
   nearby: readonly NearbyStore[];
 }) {
-  const pixelsPerMeter = 124 / 1_000;
+  const pixelsPerMeter = 124 / NEARBY_RADIUS_METERS;
   const longitudeScale = 111_320 * Math.cos((center.latitude * Math.PI) / 180);
 
   return (
@@ -731,7 +777,9 @@ function NearbyDiagram({
               ? "both"
               : store.sources.food
                 ? "food"
-                : "treasure";
+                : store.sources.treasure
+                  ? "treasure"
+                  : "directory";
           return (
             <circle
               key={store.code}
@@ -749,15 +797,106 @@ function NearbyDiagram({
       </svg>
       <figcaption>
         <strong>附近位置示意</strong>
-        <span>中心為查詢座標・外圈約 1 公里</span>
+        <span>中心為查詢座標・外圈約 3 公里</span>
         <small>不載入第三方地圖圖磚；店家與商品請以清單為準。</small>
       </figcaption>
     </figure>
   );
 }
 
+function NearbyRow({
+  store,
+  distance,
+  isFavorite,
+  states,
+  priceNotes,
+  onAdd,
+  onExpand,
+  onShowImage,
+}: {
+  store: MergedStore;
+  distance?: number;
+  isFavorite: boolean;
+  states: Record<MapSource, LoadState>;
+  priceNotes: PriceNoteActions;
+  onAdd: (store: MergedStore) => void;
+  onExpand: (store: MergedStore, retry?: boolean) => void;
+  onShowImage: (code: string, name: string, opener: HTMLButtonElement) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const failed = SOURCE_IDS.some((source) => states[source].status === "error");
+
+  return (
+    <article class="nearby-row">
+      <div class="nearby-row__head">
+        <div class="nearby-row__identity">
+          <h3>{store.name}</h3>
+          <small>{store.address || "地址未提供"}・商品地圖店代碼 {store.code}</small>
+        </div>
+        <div class="nearby-row__actions">
+          {distance !== undefined && (
+            <span class="nearby-row__distance" aria-label={`距查詢中心 ${(distance / 1_000).toFixed(2)} 公里`}>
+              {(distance / 1_000).toFixed(2)} km
+            </span>
+          )}
+          {isFavorite ? (
+            <span class="favorite-button favorite-button--active" aria-label={`${store.name}已收藏`}>已收藏</span>
+          ) : (
+            <button
+              type="button"
+              class="favorite-button"
+              aria-label={`加入收藏：${store.name}`}
+              onClick={() => onAdd(store)}
+            >
+              +收藏
+            </button>
+          )}
+        </div>
+      </div>
+      <details
+        class="nearby-row__details"
+        onToggle={(event) => {
+          const open = event.currentTarget.open;
+          setExpanded(open);
+          if (open) onExpand(store);
+        }}
+      >
+        <summary>{expanded ? "收合商品" : "查看商品（按需查詢）"}</summary>
+        {expanded && (
+          <>
+            {failed && (
+              <button type="button" class="nearby-row__retry" onClick={() => onExpand(store, true)}>
+                重試商品查詢
+              </button>
+            )}
+            <div class="store-card__badges">
+              {SOURCE_IDS.map((source) => (
+                <SourceBadge key={source} source={source} data={store.sources[source]} state={states[source]} />
+              ))}
+            </div>
+            <div class="store-card__panels">
+              {SOURCE_IDS.map((source) => (
+                <SourceDetails
+                  key={source}
+                  source={source}
+                  data={store.sources[source]}
+                  state={states[source]}
+                  editorScope={`nearby-${store.code}`}
+                  priceNotes={priceNotes}
+                  onShowImage={onShowImage}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </details>
+    </article>
+  );
+}
+
 export function App({
   client = defaultClient,
+  directoryClient = defaultDirectoryClient,
   imageClient = defaultImageClient,
   geolocation,
   storage,
@@ -775,6 +914,13 @@ export function App({
     () => new Map(priceNotes.map((note) => [note.code, note])),
     [priceNotes],
   );
+  const [navigation, setNavigation] = useState(() => ({
+    page: pageFromHash(window.location.hash),
+    hash: window.location.hash,
+  }));
+  const activePage = navigation.page;
+  const [directoryState, setDirectoryState] = useState<DirectoryLoadState>({ status: "idle" });
+  const [lookups, setLookups] = useState<Record<string, Record<MapSource, LoadState>>>({});
   const [center, setCenter] = useState<SearchCenter | null>(null);
   const [postalCode, setPostalCode] = useState<string | null>(null);
   const [states, setStates] = useState<Record<MapSource, LoadState>>(emptyStates);
@@ -786,8 +932,10 @@ export function App({
   const [latitudeText, setLatitudeText] = useState("");
   const [longitudeText, setLongitudeText] = useState("");
   const [search, setSearch] = useState("");
+  const [submittedSearch, setSubmittedSearch] = useState("");
   const [postalInput, setPostalInput] = useState("");
-  const [searchNotice, setSearchNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const [postalError, setPostalError] = useState<string | null>(null);
+  const [searchNotice, setSearchNotice] = useState<string | null>(null);
   const [treasureFilters, setTreasureFilters] = useState<TreasureFilters>(DEFAULT_TREASURE_FILTERS);
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<ImagePreview | null>(null);
@@ -802,6 +950,8 @@ export function App({
   const lastFavoriteRefreshToken = useRef(0);
   const lastManualRefresh = useRef(0);
   const locationAttempt = useRef(0);
+  const pendingLookups = useRef(new Set<string>());
+  const lookupVersions = useRef(new Map<string, number>());
   const areaSelectRef = useRef<HTMLSelectElement>(null);
   const postalInputRef = useRef<HTMLInputElement>(null);
   const removeTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -814,6 +964,53 @@ export function App({
 
   const favoriteCodesKey = favorites.map((favorite) => favorite.code).sort().join(",");
   const favoriteCodes = favoriteCodesKey ? favoriteCodesKey.split(",") : [];
+
+  function requestDirectory() {
+    if (directoryState.status === "ready") return;
+    setDirectoryState({ status: "loading" });
+    void directoryClient.load()
+      .then((directory) => setDirectoryState({ status: "ready", directory }))
+      .catch((error: unknown) => {
+        if (!(error instanceof DirectoryError)) console.error("Unexpected store directory error", error);
+        setDirectoryState({
+          status: "error",
+          message: error instanceof DirectoryError
+            ? error.message
+            : "讀取店舖目錄時發生未預期錯誤；3 公里名單暫時無法確認。",
+        });
+      });
+  }
+
+  useEffect(() => {
+    const syncHash = () => setNavigation((current) => ({
+      page: pageFromHash(window.location.hash, current.page),
+      hash: window.location.hash,
+    }));
+    window.addEventListener("hashchange", syncHash);
+    return () => window.removeEventListener("hashchange", syncHash);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!navigation.hash) return;
+    const id = navigation.hash === "#manage-favorites"
+      ? "manage-favorites-title"
+      : navigation.hash === "#location"
+        ? "location-title"
+        : navigation.hash === "#nearby"
+          ? "nearby-page-title"
+        : navigation.hash === "#top"
+          ? "top"
+          : navigation.hash === "#main-content"
+            ? "main-content"
+            : `${activePage}-title`;
+    const target = document.getElementById(id);
+    target?.scrollIntoView?.({ block: "start" });
+    target?.focus({ preventScroll: true });
+  }, [activePage, navigation.hash]);
+
+  useEffect(() => {
+    if (center) requestDirectory();
+  }, [directoryClient, center?.position.latitude, center?.position.longitude]);
 
   useEffect(() => {
     const update = () => setShowBackToTop(window.scrollY > 420);
@@ -954,39 +1151,102 @@ export function App({
     };
   }, [client, favoriteCodesKey, postalCode, refreshToken]);
 
-  const mapStores = useMemo(() => {
-    const results: Partial<Record<MapSource, OfficialStore[]>> = {};
-    for (const source of SOURCE_IDS) {
-      if (states[source].status === "ready") {
-        const rows = states[source].result.stores;
-        results[source] = center || postalCode
-          ? rows
-          : rows.filter((row) => favoriteCodes.includes(row.oldPKey));
-      }
-    }
-    return mergeStores(results, postalCode ? [] : favorites);
-  }, [states, favorites, center, postalCode]);
+  const catalogByCode = useMemo(
+    () => new Map(
+      directoryState.status === "ready"
+        ? directoryState.directory.stores.map((store) => [store.code, store] as const)
+        : [],
+    ),
+    [directoryState],
+  );
 
-  const savedStores = useMemo(() => {
-    if (!postalCode) {
-      const codes = new Set(favorites.map((favorite) => favorite.code));
-      return mapStores.filter((store) => codes.has(store.code));
+  const verifiedMap = useMemo(() => {
+    const primary: Partial<Record<MapSource, OfficialStore[]>> = {};
+    const saved: Partial<Record<MapSource, OfficialStore[]>> = {};
+    const mismatched: Record<MapSource, Set<string>> = {
+      food: new Set(), treasure: new Set(),
+    };
+    const known = new Map<string, OfficialStore>();
+    const favoritesByCode = new Map(favorites.map((favorite) => [favorite.code, favorite]));
+
+    function verified(row: OfficialStore, source: MapSource): boolean {
+      const catalog = catalogByCode.get(row.oldPKey);
+      const favorite = favoritesByCode.get(row.oldPKey);
+      const previous = known.get(row.oldPKey);
+      const valid = catalog
+        ? matchesDirectoryStore(catalog, row)
+        : (!favorite || favorite.name === `店代碼 ${favorite.code}` || namesAgree(favorite.name, row.name)) &&
+          (!previous || (
+            namesAgree(previous.name, row.name) &&
+            distanceMeters(previous, row) <= 150
+          ));
+      if (!valid) {
+        mismatched[source].add(row.oldPKey);
+        return false;
+      }
+      known.set(row.oldPKey, row);
+      return true;
     }
-    const results: Partial<Record<MapSource, OfficialStore[]>> = {};
-    const codes = new Set(favorites.map((favorite) => favorite.code));
+
     for (const source of SOURCE_IDS) {
+      const rows = states[source].status === "ready" ? states[source].result.stores : [];
+      primary[source] = rows.filter((row) => verified(row, source));
       const favoriteRows = favoriteStates[source].status === "ready"
         ? favoriteStates[source].result.stores
         : [];
-      const postalRows = states[source].status === "ready"
-        ? states[source].result.stores.filter((row) => codes.has(row.oldPKey))
-        : [];
+      saved[source] = favoriteRows.filter((row) => verified(row, source));
+    }
+    return { primary, saved, mismatched };
+  }, [catalogByCode, favoriteStates, favorites, states]);
+
+  function withDirectoryMetadata(store: MergedStore): MergedStore {
+    const catalog = catalogByCode.get(store.code);
+    return catalog
+      ? {
+          ...store,
+          name: catalog.name,
+          address: catalog.address,
+          latitude: catalog.latitude ?? undefined,
+          longitude: catalog.longitude ?? undefined,
+        }
+      : store;
+  }
+
+  const mapStores = useMemo(() => {
+    const results: Partial<Record<MapSource, OfficialStore[]>> = {};
+    for (const source of SOURCE_IDS) {
+      const rows = center || postalCode
+        ? verifiedMap.primary[source] ?? []
+        : (verifiedMap.primary[source] ?? []).filter((row) => favoriteCodes.includes(row.oldPKey));
+      const onDemand = postalCode
+        ? []
+        : Object.values(lookups).flatMap((entry) =>
+            entry[source].status === "ready" ? entry[source].result.stores : [],
+          );
       results[source] = [...new Map(
-        [...favoriteRows, ...postalRows].map((row) => [row.oldPKey, row]),
+        [...onDemand, ...rows].map((row) => [row.oldPKey, row]),
       ).values()];
     }
-    return mergeStores(results, favorites);
-  }, [postalCode, mapStores, states, favoriteStates, favorites]);
+    return mergeStores(results, postalCode ? [] : favorites).map(withDirectoryMetadata);
+  }, [verifiedMap, favorites, center, postalCode, catalogByCode, lookups]);
+
+  const savedStores = useMemo(() => {
+    const codes = new Set(favorites.map((favorite) => favorite.code));
+    if (!postalCode) return mapStores.filter((store) => codes.has(store.code));
+    const results: Partial<Record<MapSource, OfficialStore[]>> = {};
+    for (const source of SOURCE_IDS) {
+      const postalRows = (verifiedMap.primary[source] ?? []).filter((row) => codes.has(row.oldPKey));
+      const onDemand = Object.values(lookups).flatMap((entry) =>
+        entry[source].status === "ready" ? entry[source].result.stores : [],
+      );
+      results[source] = [...new Map(
+        [...onDemand, ...(verifiedMap.saved[source] ?? []), ...postalRows]
+          .filter((row) => codes.has(row.oldPKey))
+          .map((row) => [row.oldPKey, row]),
+      ).values()];
+    }
+    return mergeStores(results, favorites).map(withDirectoryMetadata);
+  }, [postalCode, mapStores, verifiedMap, favorites, catalogByCode, lookups]);
 
   function save(next: Favorite[]) {
     setFavorites(next);
@@ -1059,12 +1319,10 @@ export function App({
   const byCode = new Map(
     [...savedStores, ...mapStores].map((store) => [store.code, store]),
   );
-  const hasSearch = search.trim().length > 0;
-  const previewMatches = hasSearch
-    ? [...byCode.values()].filter((store) => matchesStore(store, search))
+  const searchMatches = directoryState.status === "ready" && submittedSearch
+    ? directoryState.directory.stores.filter((store) => matchesStore(store, submittedSearch))
     : [];
-  const favoriteStores = savedStores.filter((store) => matchesStore(store, search));
-  const readyTreasureFavorites = favoriteStores.filter(
+  const readyTreasureFavorites = savedStores.filter(
     (store) => favoriteSourceState(store, "treasure").status === "ready",
   );
   const countableTreasureProducts = readyTreasureFavorites.flatMap(
@@ -1072,13 +1330,39 @@ export function App({
   );
   const matchingTreasureCount =
     filterTreasureProducts(countableTreasureProducts, treasureFilters).length;
-  const nearby = center
-    ? getNearby(mapStores, center.position).filter(({ store }) => matchesStore(store, search))
-    : [];
+  const nearby = useMemo(() => {
+    if (!center) return [];
+    if (directoryState.status !== "ready") return getNearby(mapStores, center.position);
+    const mapOnly = mapStores.filter((store) => !catalogByCode.has(store.code));
+    const stores = directoryState.directory.stores.flatMap((catalog): MergedStore[] => {
+      const { latitude, longitude } = catalog;
+      if (latitude === null || longitude === null) return [];
+      if (mapOnly.some((store) =>
+        store.latitude !== undefined && store.longitude !== undefined &&
+        namesAgree(store.name, catalog.name) &&
+        distanceMeters({
+          latitude,
+          longitude,
+        }, {
+          latitude: store.latitude,
+          longitude: store.longitude,
+        }) <= 150,
+      )) return [];
+      const mapped = byCode.get(catalog.code);
+      return [{
+        code: catalog.code,
+        name: catalog.name,
+        address: catalog.address,
+        latitude,
+        longitude,
+        sources: mapped?.sources ?? {},
+      }];
+    });
+    stores.push(...mapOnly);
+    return getNearby(stores, center.position);
+  }, [center, directoryState, mapStores, catalogByCode]);
   const postalStores = postalCode
-    ? mapStores
-        .filter((store) => matchesStore(store, search))
-        .sort((first, second) => first.name.localeCompare(second.name, "zh-TW"))
+    ? [...mapStores].sort((first, second) => first.name.localeCompare(second.name, "zh-TW"))
     : [];
   const visibleStores = postalCode
     ? postalStores.map((store) => ({ store, distance: undefined }))
@@ -1087,6 +1371,17 @@ export function App({
   const errorCount = SOURCE_IDS.filter((source) => states[source].status === "error").length;
 
   function favoriteSourceState(store: MergedStore, source: MapSource): LoadState {
+    if (verifiedMap.primary[source]?.some((row) => row.oldPKey === store.code)) {
+      return states[source];
+    }
+    if (verifiedMap.saved[source]?.some((row) => row.oldPKey === store.code)) {
+      return favoriteStates[source];
+    }
+    const onDemand = lookups[store.code]?.[source];
+    if (onDemand && onDemand.status !== "idle") return onDemand;
+    if (verifiedMap.mismatched[source].has(store.code)) {
+      return { status: "error", message: IDENTITY_ERROR };
+    }
     if (!postalCode) return states[source];
     const mapState = states[source];
     return mapState.status === "ready" &&
@@ -1095,14 +1390,25 @@ export function App({
       : favoriteStates[source];
   }
 
+  function nearbySourceState(store: MergedStore, source: MapSource): LoadState {
+    if (verifiedMap.primary[source]?.some((row) => row.oldPKey === store.code)) {
+      return states[source];
+    }
+    const onDemand = lookups[store.code]?.[source];
+    if (onDemand && onDemand.status !== "idle") return onDemand;
+    return verifiedMap.mismatched[source].has(store.code)
+      ? { status: "error", message: IDENTITY_ERROR }
+      : states[source];
+  }
+
   function chooseCenter(position: Coordinates, label: string) {
     locationAttempt.current += 1;
     setLocating(false);
     setLocationError(null);
     setFormError(null);
+    setPostalError(null);
     setPostalCode(null);
     setPostalInput("");
-    setSearchNotice(null);
     setCenter({ position, label });
   }
 
@@ -1151,73 +1457,125 @@ export function App({
     }
   }
 
-  function focusResults(id: "nearby-title" | "favorites-title") {
-    window.setTimeout(() => {
-      const heading = document.getElementById(id);
-      heading?.scrollIntoView?.({ block: "start" });
-      heading?.focus({ preventScroll: true });
-    }, 0);
+  function choosePostalCode(event: Event) {
+    event.preventDefault();
+    const zip = postalInput.trim();
+    if (!/^\d{3}$/.test(zip)) {
+      setPostalError("請輸入三位數郵遞區號，例如 100。");
+      postalInputRef.current?.focus();
+      return;
+    }
+    locationAttempt.current += 1;
+    setLocating(false);
+    setLocationError(null);
+    setFormError(null);
+    setPostalError(null);
+    setCenter(null);
+    setPostalCode(zip);
   }
 
   function submitNameSearch(event: Event) {
     event.preventDefault();
-    const zip = postalInput.trim();
-    if (zip && !/^\d{3}$/.test(zip)) {
-      setSearchNotice({ text: "請輸入三位數郵遞區號，例如 100。", error: true });
-      postalInputRef.current?.focus();
-      return;
-    }
-    if (!zip && !hasSearch) {
-      setSearchNotice({
-        text: "請先輸入店名、地址或店代碼；也可以輸入三位數郵遞區號查看該區的地圖資料。",
-        error: true,
-      });
+    const term = search.trim();
+    if (!term) {
+      setSearchNotice("請先輸入要尋找的新分店名稱、地址或商品地圖舊店碼。");
       document.getElementById("store-search")?.focus();
       return;
     }
-    if (zip) {
-      locationAttempt.current += 1;
-      setLocating(false);
-      setLocationError(null);
-      setCenter(null);
-      setPostalCode(zip);
-      setSearchNotice({
-        text: `已選擇郵遞區號 ${zip}；符合店名的地圖結果在下方。`,
-        error: false,
-      });
-      focusResults("nearby-title");
-      return;
-    }
-    if (!center && !postalCode && previewMatches.length === 0) {
-      setSearchNotice({
-        text: "目前只載入收藏店；請先選擇附近位置，或填三位數郵遞區號後再搜尋其他分店。",
-        error: true,
-      });
-      postalInputRef.current?.focus();
-      return;
-    }
-    setSearchNotice(
-      loading
-        ? { text: "正在搜尋官方地圖；結果會顯示在下方。", error: false }
-        : errorCount > 0 && previewMatches.length === 0
-          ? { text: "部分地圖讀取失敗，無法確認是否有符合的分店。", error: true }
-          : {
-              text: previewMatches.length > 0
-                ? `已載入清單符合 ${previewMatches.length} 間店；完整資料請見下方結果。`
-                : "已載入清單沒有符合的店；可更換區域或直接輸入店代碼收藏。",
-              error: false,
-            },
-    );
-    focusResults(visibleStores.length > 0 || favoriteStores.length === 0
-      ? "nearby-title"
-      : "favorites-title");
+    setSearchNotice(null);
+    setSubmittedSearch(term);
+    requestDirectory();
   }
 
-  function addFavorite(store: MergedStore) {
+  function lookupStoreProducts(store: MergedStore, retry = false) {
+    const catalog = catalogByCode.get(store.code);
+    const version = lookupVersions.current.get(store.code) ?? 0;
+    if (!catalog && Object.keys(store.sources).length > 0) return;
+    if (catalog?.latitude === null || catalog?.longitude === null) {
+      setLookups((current) => ({
+        ...current,
+        [store.code]: {
+          food: { status: "error", message: "店舖目錄座標異常，無法核對商品地圖；請至官方地圖確認。" },
+          treasure: { status: "error", message: "店舖目錄座標異常，無法核對商品地圖；請至官方地圖確認。" },
+        },
+      }));
+      return;
+    }
+    for (const source of SOURCE_IDS) {
+      const state = lookups[store.code]?.[source];
+      const key = `${store.code}:${source}`;
+      if (
+        store.sources[source] || pendingLookups.current.has(key) ||
+        (state && state.status !== "idle" && !(retry && state.status === "error"))
+      ) continue;
+      pendingLookups.current.add(key);
+      setLookups((current) => ({
+        ...current,
+        [store.code]: { ...(current[store.code] ?? emptyStates()), [source]: { status: "loading" } },
+      }));
+      void client.load({
+        source,
+        position: FAVORITES_REFERENCE_POSITION,
+        favoriteCodes: [store.code],
+      }).then((result) => {
+        if ((lookupVersions.current.get(store.code) ?? 0) !== version) return;
+        const row = result.stores.find((candidate) => candidate.oldPKey === store.code);
+        const verified = row && (catalog
+          ? matchesDirectoryStore(catalog, row)
+          : namesAgree(store.name, row.name) &&
+            store.latitude !== undefined && store.longitude !== undefined &&
+            distanceMeters({
+              latitude: store.latitude,
+              longitude: store.longitude,
+            }, row) <= 150);
+        const wrongCode = !row && result.stores.some((candidate) =>
+          namesAgree(candidate.name, store.name) && candidate.oldPKey !== store.code,
+        );
+        setLookups((current) => ({
+          ...current,
+          [store.code]: {
+            ...(current[store.code] ?? emptyStates()),
+            [source]: row && !verified || wrongCode
+              ? { status: "error", message: IDENTITY_ERROR }
+              : { status: "ready", result: { ...result, stores: row ? [row] : [] } },
+          },
+        }));
+      }).catch((error: unknown) => {
+        if ((lookupVersions.current.get(store.code) ?? 0) !== version) return;
+        if (!(error instanceof MapApiError)) console.error("Unexpected store product lookup error", error);
+        setLookups((current) => ({
+          ...current,
+          [store.code]: {
+            ...(current[store.code] ?? emptyStates()),
+            [source]: {
+              status: "error",
+              message: error instanceof MapApiError
+                ? error.message
+                : "查詢這間店的商品時發生未預期錯誤；請稍後重試。",
+            },
+          },
+        }));
+      }).finally(() => pendingLookups.current.delete(key));
+    }
+  }
+
+  function addFavorite(store: MergedStore | DirectoryStore) {
+    if (favorites.some((favorite) => favorite.code === store.code)) return;
     save([
       { code: store.code, name: store.name, address: store.address },
-      ...favorites.filter((favorite) => favorite.code !== store.code),
+      ...favorites,
     ]);
+    if (catalogByCode.has(store.code)) {
+      const mapped = byCode.get(store.code);
+      if (!mapped || !Object.keys(mapped.sources).length) {
+        lookupStoreProducts(mapped ?? {
+          ...store,
+          latitude: store.latitude ?? undefined,
+          longitude: store.longitude ?? undefined,
+          sources: {},
+        });
+      }
+    }
   }
 
   function confirmRemoval(code: string) {
@@ -1280,10 +1638,10 @@ export function App({
     setImagePreview(null);
     const opener = imageTriggerRef.current;
     imageTriggerRef.current = null;
-    if (opener?.isConnected) {
+    if (opener?.isConnected && !opener.closest("[hidden]")) {
       opener.focus();
     } else {
-      document.getElementById("main-content")?.focus();
+      document.getElementById(activePage === "nearby" ? "nearby-page-title" : `${activePage}-title`)?.focus();
     }
   }
 
@@ -1291,28 +1649,25 @@ export function App({
     event.preventDefault();
     const code = storeCode.trim();
     if (!STORE_CODE_PATTERN.test(code)) {
-      setCodeMessage("請輸入官方地圖或收據上的數字店代碼（例如 018558）。");
+      setCodeMessage("請輸入商品地圖上的數字舊店碼（例如 018558）。");
       return;
     }
     if (favorites.some((favorite) => favorite.code === code)) {
       setCodeMessage("這間店已在收藏清單中。");
       return;
     }
-    const matched = byCode.get(code);
-    save([
-      {
-        code,
-        name: matched?.name ?? `店代碼 ${code}`,
-        address: matched?.address,
-      },
-      ...favorites,
-    ]);
-    if (!matched && !postalCode) setLookupToken((previous) => previous + 1);
+    const matched = byCode.get(code) ?? catalogByCode.get(code);
+    if (matched) {
+      addFavorite(matched);
+    } else {
+      save([{ code, name: `店代碼 ${code}` }, ...favorites]);
+      if (!postalCode) setLookupToken((previous) => previous + 1);
+    }
     setStoreCode("");
     setCodeMessage(
       matched
         ? "已加入收藏。"
-        : "已保留這個店代碼並查詢官方地圖；若地圖暫無資料，收藏仍會保留。",
+        : "已保留這個商品地圖舊店碼並查詢官方地圖；若地圖暫無資料，收藏仍會保留。",
     );
   }
 
@@ -1323,37 +1678,49 @@ export function App({
       return;
     }
     lastManualRefresh.current = now;
+    for (const favorite of favorites) {
+      lookupVersions.current.set(favorite.code, (lookupVersions.current.get(favorite.code) ?? 0) + 1);
+    }
+    const favoriteCodes = new Set(favorites.map((favorite) => favorite.code));
+    setLookups((current) => Object.fromEntries(
+      Object.entries(current).filter(([code]) => !favoriteCodes.has(code)),
+    ));
     setRefreshMessage("正在重新查詢兩張官方地圖…");
     setRefreshToken((previous) => previous + 1);
   }
 
   return (
     <>
-      <header id="top" class="site-header">
+      <header id="top" class="site-header" tabIndex={-1}>
         <div class="container site-header__inner">
-          <a class="brand" href="#main-content" aria-label="全家附近好物，回到主要內容">
+          <a class="brand" href="#home" aria-label="全家附近好物，回首頁">
             <span class="brand__mark" aria-hidden="true"><span /></span>
             <span>附近好物<span class="brand__suffix"> / FAMILY STORE MAP</span></span>
             <span class="brand__disclaimer">非官方</span>
           </a>
-          <nav aria-label="頁面導覽">
-            <a href="#favorites">我的收藏</a>
-            <a href="#receipt-prices">收據參考</a>
-            <a href="#price-notes">原價紀錄</a>
-            <a href="#nearby">附近店家</a>
-            <a href="#about">資料說明</a>
+          <nav aria-label="分頁導覽">
+            <a href="#nearby" aria-current={activePage === "nearby" ? "page" : undefined}>附近店家</a>
+            <a href="#favorites" aria-current={activePage === "favorites" ? "page" : undefined}>收藏店家</a>
+            <a href="#receipt-prices" aria-current={activePage === "receipt-prices" ? "page" : undefined}>收據參考</a>
+            <a href="#price-notes" aria-current={activePage === "price-notes" ? "page" : undefined}>原價紀錄</a>
+            <a href="#about" aria-current={activePage === "about" ? "page" : undefined}>資料說明</a>
           </nav>
         </div>
       </header>
 
       <main id="main-content" tabIndex={-1}>
-        <section class="hero">
+        <section id="home" class="hero" hidden={activePage !== "home"}>
           <div class="container hero__inner">
             <div>
               <span class="eyebrow">兩張地圖，一眼看懂</span>
-              <h1>常去的全家，<br /><em>好物不錯過。</em></h1>
-              <p>收藏分店，快速查看「友善食光」與「挖寶專區」回傳的商品；或用目前位置找附近店家。</p>
-              <a class="hero__link" href="#location">開始找附近 <span aria-hidden="true">↗</span></a>
+              <h1 id="home-title" tabIndex={-1}>常去的全家，<br /><em>好物不錯過。</em></h1>
+              <p>收藏分店，快速查看「友善食光」與「挖寶專區」回傳的商品；也能查看 3 公里內的全家店舖清單。</p>
+              <div class="hero__actions">
+                <a class="hero__link" href="#nearby">開始找附近 <span aria-hidden="true">↗</span></a>
+                <a class="hero__link hero__link--secondary" href="#favorites">
+                  開始找收藏店家 <span aria-hidden="true">↗</span>
+                </a>
+              </div>
             </div>
             <div class="hero__art" aria-hidden="true">
               <span class="hero__orbit hero__orbit--one" />
@@ -1367,7 +1734,19 @@ export function App({
         </section>
 
         <div class="container">
-          <div class="source-grid" aria-label="官方地圖資料狀態">
+          {activePage === "nearby" && (
+            <div class="page-heading">
+              <div class="section-label"><span>⌖</span> 店舖目錄與官方商品地圖</div>
+              <h2 id="nearby-page-title" tabIndex={-1}>附近店家</h2>
+              <p>選擇位置後列出 3 公里內分店，依距離排序；商品須展開才按需查詢，資料可能缺漏。</p>
+              <a href="#home">回首頁</a>
+            </div>
+          )}
+          <div
+            class="source-grid"
+            aria-label="官方商品地圖資料狀態"
+            hidden={activePage !== "home"}
+          >
             {SOURCE_IDS.map((source) => (
               <SourceStatus
                 key={source}
@@ -1379,16 +1758,45 @@ export function App({
               />
             ))}
           </div>
-          <p class="source-note">
-            僅顯示地圖目前回傳的商品資料，並非所有分店或完整／即時庫存；未回傳資料不等於缺貨。
+          <p class="source-note" hidden={activePage !== "home"}>
+            兩張地圖僅提供查詢時回傳的商品，不是 3 公里完整商品庫存；未回傳不等於缺貨。
           </p>
+          <section class="home-intro" aria-labelledby="home-intro-title" hidden={activePage !== "home"}>
+            <h2 id="home-intro-title">怎麼使用附近好物？</h2>
+            <div class="home-intro__cards">
+              <div>
+                <h3>附近店家</h3>
+                <p>同意定位、選地區中心或輸入座標，查看 3 公里內店名、距離並直接收藏；不需定位也可查郵遞區號的地圖結果。</p>
+              </div>
+              <div>
+                <h3>收藏店家</h3>
+                <p>搜尋全臺官方店舖目錄新增收藏，或直接輸入商品地圖店代碼；可篩選收藏店的挖寶商品，移除時需要再次確認。</p>
+              </div>
+              <div>
+                <h3>價格與資料說明</h3>
+                <p>收據參考價不是官方定價；個人原價與收藏只存於本機。店舖目錄為公開快照，商品與圖片依官方地圖按需查詢。</p>
+              </div>
+            </div>
+            <p>本站非全家官方網站，店舖快照與商品地圖可能延遲或缺漏；實際販售請以官方與現場為準。</p>
+          </section>
+          {activePage !== "home" && activePage !== "nearby" && (
+            <div class="page-context">
+              <span>目前分頁：{{
+                favorites: "收藏店家",
+                "receipt-prices": "收據參考",
+                "price-notes": "原價紀錄",
+                about: "資料說明",
+              }[activePage]}</span>
+              <a href="#home">回首頁</a>
+            </div>
+          )}
 
-          <div class="page-grid">
-            <aside class="controls" aria-label="搜尋條件">
+          <div class={`page-grid page-grid--${activePage}`} hidden={activePage === "home"}>
+            <aside class="controls" aria-label="附近位置選擇" hidden={activePage !== "nearby"}>
               <section id="location" class="control-panel">
                 <div class="section-label"><span>01</span> 選擇查詢位置</div>
-                <h2>你想從哪裡找？</h2>
-                <p class="muted">搜尋中心約 1 公里內、兩張地圖有回傳的店家。</p>
+                <h2 id="location-title" tabIndex={-1}>你想從哪裡找？</h2>
+                <p class="muted">以選定位置為中心列出 3 公里內的店舖，商品資料另向地圖查詢。</p>
                 <button
                   class="primary-button"
                   type="button"
@@ -1434,7 +1842,7 @@ export function App({
                   </select>
                   <button class="secondary-button" type="submit">搜尋此區域附近</button>
                 </form>
-                <p class="field-hint">以標示地點為中心查詢約 1 公里，非整個行政區。</p>
+                <p class="field-hint">以標示地點為中心計算 3 公里，非整個行政區。</p>
 
                 <form class="coordinate-form" onSubmit={chooseCoordinates}>
                   <div class="coordinate-form__fields">
@@ -1466,156 +1874,70 @@ export function App({
                 {formError && <p class="inline-alert" role="alert">{formError}</p>}
               </section>
 
-              <section class="control-panel control-panel--search">
-                <div class="section-label"><span>02</span> 店名搜尋</div>
-                <h2>找你的分店</h2>
-                <form class="name-search" onSubmit={submitNameSearch}>
-                  <label for="store-search">搜尋店名、地址或店代碼</label>
-                  <div class="name-search__row">
-                    <input
-                      id="store-search"
-                      type="search"
-                      placeholder="例如：台鐵西"
-                      value={search}
-                      onInput={(event) => {
-                        setSearch(event.currentTarget.value);
-                        setSearchNotice(null);
-                      }}
-                    />
-                    <button type="submit">搜尋分店</button>
-                  </div>
-                  <label for="postal-code">三位數郵遞區號（未選位置時請填寫）</label>
+              <section class="control-panel control-panel--postal">
+                <div class="section-label"><span>02</span> 郵遞區號備用查詢</div>
+                <h2>不提供位置也能找</h2>
+                <p class="muted">三位數郵碼只查官方商品地圖的該區結果，並非完整店舖名錄或 3 公里範圍。</p>
+                <form onSubmit={choosePostalCode}>
+                  <label for="postal-code">三位數郵遞區號</label>
                   <input
                     id="postal-code"
                     ref={postalInputRef}
                     type="text"
                     inputMode="numeric"
+                    maxLength={3}
                     placeholder="例如：100"
                     value={postalInput}
                     onInput={(event) => {
                       setPostalInput(event.currentTarget.value);
-                      setSearchNotice(null);
+                      setPostalError(null);
                     }}
                   />
-                  <p class="field-hint">
-                    先選附近位置，或輸入郵遞區號；只搜尋兩張地圖目前回傳的店，非全臺完整名錄。
-                  </p>
-                  <a
-                    class="store-directory-link"
-                    href="https://www.family.com.tw/Marketing/zh/Map"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    不知道郵遞區號？查看全家官方店舖查詢 <span aria-hidden="true">↗</span>
-                  </a>
-                  {postalCode && (
-                    <div class="current-center">
-                      <span>查詢郵遞區號：<strong>{postalCode}</strong></span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPostalCode(null);
-                          setPostalInput("");
-                          setSearchNotice(null);
-                        }}
-                      >
-                        清除此區域
-                      </button>
-                    </div>
-                  )}
-                  {searchNotice && (
-                    <p
-                      class={searchNotice.error ? "inline-alert" : "form-message"}
-                      role={searchNotice.error ? "alert" : "status"}
+                  <button class="secondary-button" type="submit">查詢此郵遞區號</button>
+                </form>
+                {postalError && <p class="inline-alert" role="alert">{postalError}</p>}
+                <a
+                  class="store-directory-link"
+                  href="https://www.family.com.tw/Marketing/zh/Map"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  查看全家官方店舖查詢 <span aria-hidden="true">↗</span>
+                </a>
+                {postalCode && (
+                  <div class="current-center">
+                    <span>查詢郵遞區號：<strong>{postalCode}</strong></span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPostalCode(null);
+                        setPostalInput("");
+                      }}
                     >
-                      {searchNotice.text}
-                    </p>
-                  )}
-                  {hasSearch && (
-                    <div class="search-preview">
-                      <p role="status">
-                        {loading
-                          ? "正在搜尋官方地圖…"
-                          : previewMatches.length > 0
-                            ? `已載入清單符合 ${previewMatches.length} 間分店`
-                            : errorCount > 0
-                              ? "部分地圖讀取失敗，搜尋結果不完整。"
-                              : center || postalCode
-                                ? "目前地圖未回傳符合店名的店家；可換區域或輸入店代碼收藏。"
-                                : "尚未載入其他分店；請先選附近位置或輸入郵遞區號。"}
-                      </p>
-                      {previewMatches.length > 0 && (
-                        <ul>
-                          {previewMatches.slice(0, 5).map((store) => {
-                            const isFavorite = favorites.some((favorite) => favorite.code === store.code);
-                            return (
-                              <li key={store.code}>
-                                <div>
-                                  <strong>{store.name}</strong>
-                                  <small>
-                                    {visibleStores.some((entry) => entry.store.code === store.code)
-                                      ? store.address || `店代碼 ${store.code}`
-                                      : `收藏店（不一定在查詢區域）・${store.address || store.code}`}
-                                  </small>
-                                </div>
-                                {isFavorite ? (
-                                  <span class="search-preview__saved" aria-label={`${store.name}已收藏`}>
-                                    已收藏
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    aria-label={`加入收藏：${store.name}`}
-                                    onClick={() => addFavorite(store)}
-                                  >
-                                    收藏
-                                  </button>
-                                )}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      )}
-                      {previewMatches.length > 0 && (
-                        <a href={visibleStores.length > 0 ? "#nearby" : "#favorites"}>
-                          查看商品與完整結果 ↓
-                        </a>
-                      )}
-                    </div>
-                  )}
-                </form>
-                <form class="code-form" onSubmit={addCode}>
-                  <label for="store-code">已有店代碼？直接收藏</label>
-                  <div class="code-form__row">
-                    <input
-                      id="store-code"
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={12}
-                      placeholder="例如 018558"
-                      value={storeCode}
-                      onInput={(event) => setStoreCode(event.currentTarget.value)}
-                    />
-                    <button type="submit" aria-label="收藏輸入的店代碼">加入</button>
+                      清除此區域
+                    </button>
                   </div>
-                  <p class="field-hint">即使地圖暫未回傳商品，這個店代碼仍會保留在收藏。</p>
-                  {codeMessage && <p class="form-message" role="status">{codeMessage}</p>}
-                </form>
-                {storageWarning && <p class="inline-alert" role="alert">{storageWarning}</p>}
+                )}
               </section>
             </aside>
 
             <div class="results">
-              <section id="favorites" class="result-section" aria-labelledby="favorites-title">
+              <section
+                id="favorites"
+                class="result-section"
+                aria-labelledby="favorites-title"
+                hidden={activePage !== "favorites"}
+              >
                 <div class="result-section__heading">
                   <div>
                     <div class="section-label"><span>★</span> 快速查看</div>
-                    <h2 id="favorites-title" tabIndex={-1}>我的收藏 <span>{favorites.length}</span></h2>
+                    <h2 id="favorites-title" tabIndex={-1}>收藏店家・我的收藏 <span>{favorites.length}</span></h2>
                   </div>
                   {favorites.length > 0 && (
                     <a class="manage-favorites-link" href="#manage-favorites">管理收藏 <span aria-hidden="true">→</span></a>
                   )}
                 </div>
+                {storageWarning && <p class="inline-alert" role="alert">{storageWarning}</p>}
                 <div class="favorite-filters" aria-labelledby="favorite-filters-title">
                   <div class="favorite-filters__heading">
                     <h3 id="favorite-filters-title">篩選收藏中的挖寶商品</h3>
@@ -1676,14 +1998,9 @@ export function App({
                     <h3>還沒有收藏的分店</h3>
                     <p>從附近清單按「收藏」，或輸入已知店代碼；收藏會留在這台裝置。</p>
                   </div>
-                ) : favoriteStores.length === 0 ? (
-                  <div class="empty-state">
-                    <h3>收藏裡沒有符合搜尋的店</h3>
-                    <p>清除店名搜尋即可看見所有收藏，資料不會被刪除。</p>
-                  </div>
                 ) : (
                   <div class="store-list">
-                    {favoriteStores.map((store) => (
+                    {savedStores.map((store) => (
                       <StoreCard
                         key={store.code}
                         store={store}
@@ -1711,7 +2028,114 @@ export function App({
                 )}
               </section>
 
-              <section id="manage-favorites" class="result-section" aria-labelledby="manage-favorites-title">
+              <section
+                class="control-panel control-panel--search"
+                aria-labelledby="new-store-title"
+                hidden={activePage !== "favorites"}
+              >
+                <div class="section-label"><span>＋</span> 店名搜尋・新增收藏</div>
+                <h2 id="new-store-title">找新的全家分店</h2>
+                <p class="muted">從官方店舖目錄快照搜尋全臺分店並按「+收藏」；這不會過濾我的收藏、附近店家或商品。</p>
+                <form class="name-search" onSubmit={submitNameSearch}>
+                  <label for="store-search">搜尋店名、地址或商品地圖舊店碼</label>
+                  <div class="name-search__row">
+                    <input
+                      id="store-search"
+                      type="search"
+                      placeholder="例如：龍潭大草坪"
+                      value={search}
+                      onInput={(event) => {
+                        setSearch(event.currentTarget.value);
+                        setSubmittedSearch("");
+                        setSearchNotice(null);
+                      }}
+                    />
+                    <button type="submit">搜尋新分店</button>
+                  </div>
+                  <p class="field-hint">
+                    不須定位或郵遞區號；目錄店碼與商品地圖舊店碼不同，加入時會使用已核對的舊店碼。
+                  </p>
+                </form>
+                {searchNotice && (
+                  <p class="inline-alert" role="alert">{searchNotice}</p>
+                )}
+                {directoryState.status === "ready" && (
+                  <p class="directory-meta">
+                    官方店舖目錄快照：{timeLabel(directoryState.directory.updatedAt)}・
+                    共 {directoryState.directory.stores.length} 間。
+                    {directoryState.directory.unlocatedCount > 0 &&
+                      `其中 ${directoryState.directory.unlocatedCount} 間座標異常，不列入附近距離計算。`}
+                    {" "}快照可能延遲／缺漏，不等於商品庫存。
+                  </p>
+                )}
+                {directoryState.status === "error" && (
+                  <p class="inline-alert" role="alert">{directoryState.message} 請重新搜尋，或直接輸入已知舊店碼。</p>
+                )}
+                {submittedSearch && (
+                  <div class="search-preview" aria-labelledby="search-results-title">
+                    <h3 id="search-results-title">新分店搜尋結果</h3>
+                    <p role="status">
+                      {directoryState.status === "loading"
+                        ? "正在載入全臺店舖目錄快照…"
+                        : directoryState.status === "error"
+                          ? "店舖目錄讀取失敗，無法確認搜尋結果。"
+                          : directoryState.status === "ready"
+                            ? searchMatches.length > 0
+                              ? `找到 ${searchMatches.length} 間分店${searchMatches.length > 30 ? "；先顯示前 30 間，請縮小搜尋條件" : ""}。`
+                              : "目錄快照沒有符合的店；可能延遲或缺漏，請至官方店舖查詢核對。"
+                            : "尚未查詢。"}
+                    </p>
+                    {directoryState.status === "ready" && searchMatches.length > 0 && (
+                      <ul>
+                        {searchMatches.slice(0, 30).map((store) => (
+                          <li key={store.code}>
+                            <div>
+                              <strong>{store.name}</strong>
+                              <small>{store.address}・商品地圖店代碼 {store.code}</small>
+                              {store.latitude === null && <small>目錄座標異常，無法核對商品。</small>}
+                            </div>
+                            {favorites.some((favorite) => favorite.code === store.code) ? (
+                              <span class="search-preview__saved" aria-label={`${store.name}已收藏`}>已收藏</span>
+                            ) : (
+                              <button
+                                type="button"
+                                aria-label={`加入收藏：${store.name}`}
+                                onClick={() => addFavorite(store)}
+                              >
+                                +收藏
+                              </button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                <form class="code-form" onSubmit={addCode}>
+                  <label for="store-code">已知商品地圖舊店碼？直接收藏</label>
+                  <div class="code-form__row">
+                    <input
+                      id="store-code"
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={12}
+                      placeholder="例如 018558"
+                      value={storeCode}
+                      onInput={(event) => setStoreCode(event.currentTarget.value)}
+                    />
+                    <button type="submit" aria-label="收藏輸入的店代碼">加入</button>
+                  </div>
+                  <p class="field-hint">即使地圖暫未回傳商品，店代碼仍會保留在此裝置；請勿輸入目錄的新店碼。</p>
+                  {codeMessage && <p class="form-message" role="status">{codeMessage}</p>}
+                </form>
+              </section>
+
+              <section
+                id="manage-favorites"
+                class="result-section"
+                aria-labelledby="manage-favorites-title"
+                hidden={activePage !== "favorites"}
+              >
                 <div class="result-section__heading">
                   <div>
                     <div class="section-label"><span>✎</span> 獨立管理</div>
@@ -1783,11 +2207,18 @@ export function App({
                 )}
               </section>
 
-              <section id="receipt-prices" class="result-section" aria-labelledby="receipt-prices-title">
+              <section
+                id="receipt-prices"
+                class="result-section"
+                aria-labelledby="receipt-prices-title"
+                hidden={activePage !== "receipt-prices"}
+              >
                 <div class="result-section__heading">
                   <div>
                     <div class="section-label"><span>NT$</span> 公開內建・所有訪客可見</div>
-                    <h2 id="receipt-prices-title">收據參考價 <span>{Object.keys(RECEIPT_PRICE_REFERENCES).length}</span></h2>
+                    <h2 id="receipt-prices-title" tabIndex={-1}>
+                      收據參考價 <span>{Object.keys(RECEIPT_PRICE_REFERENCES).length}</span>
+                    </h2>
                     <p>
                       使用者提供的 {RECEIPT_REFERENCE_DATE} 收據：原價是當時標示單價，折後價是該筆
                       逐件五折並將 .5 元進位的推算；非官方定價，不保證現在或未來售價／優惠。
@@ -1819,7 +2250,12 @@ export function App({
                 </details>
               </section>
 
-              <section id="price-notes" class="result-section" aria-labelledby="price-notes-title">
+              <section
+                id="price-notes"
+                class="result-section"
+                aria-labelledby="price-notes-title"
+                hidden={activePage !== "price-notes"}
+              >
                 <div class="result-section__heading">
                   <div>
                     <div class="section-label"><span>NT$</span> 只存在本機</div>
@@ -1828,7 +2264,7 @@ export function App({
                     </h2>
                     <p>
                       商品原價（折扣前）只由你輸入，以商品代碼跨分店共用；
-                      與上方公開的收據參考價分開，非官方定價、不送往 API，換裝置不會同步。
+                      與公開的收據參考價分開，非官方定價、不送往 API，換裝置不會同步。
                     </p>
                   </div>
                 </div>
@@ -1874,116 +2310,218 @@ export function App({
                 </details>
               </section>
 
-              <section id="nearby" class="result-section" aria-labelledby="nearby-title">
+              <section
+                id="nearby"
+                class="result-section"
+                aria-labelledby="nearby-title"
+                hidden={activePage !== "nearby"}
+              >
                 <div class="result-section__heading">
                   <div>
                     <div class="section-label">
                       <span>{postalCode ? "⌕" : "⌖"}</span>
-                      {postalCode ? "郵遞區號查詢" : "一公里內"}
+                      {postalCode ? "郵遞區號地圖結果" : "3 公里店舖清單"}
                     </div>
-                    <h2 id="nearby-title" tabIndex={-1}>{postalCode ? "分店搜尋結果" : "附近店家"}</h2>
+                    <h2 id="nearby-title" tabIndex={-1}>{postalCode ? "分店搜尋結果" : "依距離排序的店家"}</h2>
                     <p>
                       {postalCode
-                        ? `郵遞區號 ${postalCode}・依店名排序・僅含地圖回傳的本區店家`
+                        ? `郵遞區號 ${postalCode}・依店名排序・僅含商品地圖回傳的店，不是完整店舖名錄`
                         : center
-                          ? `${center.label}周邊・依距離排序・僅含地圖有回傳的店`
+                          ? `${center.label}周邊 3 公里・依距離排序・+收藏或展開按需查詢商品`
                           : "先使用目前位置，或選擇地區／輸入座標；也可用郵遞區號搜尋。"}
                     </p>
                   </div>
-                  {(center || postalCode || favorites.length > 0) && (
+                  {(center || postalCode) && (
                     <button
                       type="button"
                       class="refresh-button"
                       disabled={loading}
                       onClick={refresh}
                     >
-                      <span aria-hidden="true">↻</span> 重新查詢
+                      <span aria-hidden="true">↻</span> 重新查詢商品地圖
                     </button>
                   )}
                 </div>
+                <div class="source-grid source-grid--nearby" aria-label="本次商品地圖查詢狀態">
+                  {SOURCE_IDS.map((source) => (
+                    <SourceStatus
+                      key={source}
+                      source={source}
+                      state={states[source]}
+                      center={center}
+                      postalCode={postalCode}
+                      favoriteCodes={favoriteCodes}
+                    />
+                  ))}
+                </div>
+                <p class="source-note">
+                  商品地圖與店舖目錄不同；地圖未回傳商品不等於缺貨，店舖清單也不是即時庫存。
+                </p>
                 {refreshMessage && <p class="refresh-message" role="status">{refreshMessage}</p>}
+                {center && directoryState.status === "loading" && (
+                  <p class="loading-state" role="status">
+                    正在載入全臺店舖目錄快照；目前地圖若有結果也僅為部分店家，不是 3 公里完整名單。
+                  </p>
+                )}
+                {center && directoryState.status === "error" && (
+                  <div class="directory-error" role="alert">
+                    <p>{directoryState.message} 以下若有商品地圖結果也只是部分店家，並非 3 公里完整名單。</p>
+                    <button type="button" onClick={requestDirectory}>重試店舖目錄</button>
+                  </div>
+                )}
+                {center && directoryState.status === "ready" && (
+                  <>
+                    <p class="directory-meta">
+                      官方店舖目錄快照更新於 {timeLabel(directoryState.directory.updatedAt)}；
+                      共 {directoryState.directory.stores.length} 間，
+                      {directoryState.directory.unlocatedCount} 間座標異常未納入距離計算。
+                      快照可能延遲／缺漏，不等於商品庫存。
+                    </p>
+                    {isDirectoryStale(directoryState.directory.updatedAt) && (
+                      <p class="inline-alert" role="alert">
+                        店舖目錄快照已超過 48 小時；資料可能過期，請以官方店舖查詢為準。
+                      </p>
+                    )}
+                  </>
+                )}
                 {!center && !postalCode ? (
                   <div class="empty-state empty-state--location">
                     <span class="empty-state__icon" aria-hidden="true">⌖</span>
                     <h3>選個位置，看看附近有什麼</h3>
-                    <p>不用授權定位也能選地區中心或輸入郵遞區號；若有收藏，已在上方獨立查詢。</p>
+                    <p>不用授權定位也能選地區中心、手動座標或郵遞區號；已收藏的分店請見收藏店家分頁。</p>
                     <a href="#location">前往位置選擇 <span aria-hidden="true">↑</span></a>
                   </div>
                 ) : (
                   <>
-                    {center && nearby.length > 0 && (
-                      <NearbyDiagram center={center.position} nearby={nearby} />
+                    {center && directoryState.status === "ready" && nearby.length > 0 && (
+                      <details class="nearby-diagram-details">
+                        <summary>查看 3 公里內店家的位置示意</summary>
+                        <NearbyDiagram center={center.position} nearby={nearby} />
+                      </details>
                     )}
                     {loading && <p class="loading-state" role="status">正在讀取兩張官方地圖資料…</p>}
                     {visibleStores.length > 0 ? (
                       <>
                         <p class="result-count">
-                          此清單 {visibleStores.length} 間地圖回傳的店
-                          {errorCount > 0 && "・部分地圖讀取失敗，結果不完整"}
+                          {postalCode
+                            ? `郵遞區號 ${postalCode}：商品地圖回傳 ${visibleStores.length} 間店（非完整名錄）`
+                            : directoryState.status === "ready"
+                              ? `3 公里內 ${visibleStores.length} 間店（含商品地圖額外回傳的店）`
+                              : `目前僅有 ${visibleStores.length} 間商品地圖回傳的部分店家（非 3 公里完整名單）`}
+                          {errorCount > 0 && "・部分商品地圖讀取失敗，商品資料可能缺漏"}
                         </p>
                         <div class="store-list">
                           {visibleStores.map(({ store, distance }) => (
-                            <StoreCard
+                            <NearbyRow
                               key={store.code}
                               store={store}
                               isFavorite={favorites.some((favorite) => favorite.code === store.code)}
                               distance={distance}
-                              states={states}
-                              favoriteView={false}
+                              states={{
+                                food: nearbySourceState(store, "food"),
+                                treasure: nearbySourceState(store, "treasure"),
+                              }}
                               onAdd={addFavorite}
+                              onExpand={lookupStoreProducts}
                               onShowImage={showImage}
                               priceNotes={priceNoteActions}
                             />
                           ))}
                         </div>
                       </>
-                    ) : !loading ? (
+                    ) : !loading && !(center && directoryState.status === "loading") ? (
                       <div class="empty-state">
                         <h3>
-                          {errorCount > 0
-                            ? "部分地圖資料暫時無法確認"
-                            : hasSearch
-                              ? "目前沒有符合搜尋的地圖資料"
-                              : "目前未找到可列出的附近商品"}
+                          {center && directoryState.status === "error"
+                            ? "3 公里店舖名單暫時無法確認"
+                            : errorCount > 0 && (postalCode || directoryState.status !== "ready")
+                              ? "部分地圖資料暫時無法確認"
+                              : center ? "3 公里內沒有可定位的店舖資料" : "目前沒有回傳此郵遞區號的店"}
                         </h3>
                         <p>
-                          {errorCount === 2
-                            ? "兩張地圖都無法讀取；請稍後重新查詢或前往官方地圖。"
-                            : errorCount === 1
-                              ? "可讀取的地圖未回傳符合條件的附近店家；另一張地圖讀取失敗，結果不完整。"
-                              : hasSearch
-                                ? "僅搜尋本次兩張地圖回傳的店；未回傳不代表店家缺貨。可清除搜尋、更換區域或輸入店代碼收藏。"
-                                : postalCode
-                                  ? "兩張地圖目前未回傳此郵遞區號的店家商品資料；不代表店家缺貨。"
-                                  : "兩張地圖目前未回傳此範圍的店家商品資料；不代表店家缺貨。"}
+                          {center && directoryState.status === "error"
+                            ? "目錄無法載入，商品地圖未提供完整 3 公里清單；請重試目錄或前往官方店舖查詢。"
+                            : errorCount === 2
+                              ? "兩張商品地圖都無法讀取；請稍後重試，不代表店家缺貨。"
+                              : postalCode && errorCount === 1
+                                ? "一張商品地圖讀取失敗，另一張未回傳此郵碼的店家；結果不完整，不能推斷缺貨。"
+                              : postalCode
+                                ? "地圖未回傳此郵遞區號的店家商品；資料可能缺漏，不代表店家缺貨。"
+                                : "目錄沒有可定位的店舖；資料可能延遲或缺漏，不代表附近店家缺貨。"}
                         </p>
                       </div>
                     ) : null}
                   </>
                 )}
               </section>
+
+              <section
+                id="about"
+                class="result-section about-panel"
+                aria-labelledby="about-title"
+                hidden={activePage !== "about"}
+              >
+                <div class="result-section__heading">
+                  <div>
+                    <div class="section-label"><span>i</span> 來源・限制・隱私</div>
+                    <h2 id="about-title" tabIndex={-1}>資料說明</h2>
+                    <p>這是非官方網站；店舖目錄與商品地圖是兩種不同資料來源，均不能保證即時庫存。</p>
+                  </div>
+                </div>
+                <div class="about-panel__cards">
+                  <section>
+                    <h3>店舖清單與更新時間</h3>
+                    <p>
+                      3 公里清單使用公開的全家店舖目錄，每次 GitHub Pages 發布前重新取得、
+                      驗證代碼與座標後產生靜態快照；網站只在查附近或新增收藏時載入，
+                      不會把你的座標送給店舖目錄。目錄可能延遲、缺漏或有錯誤座標，
+                      店舖名單不等於商品庫存。
+                    </p>
+                    {directoryState.status === "ready" ? (
+                      <p>本次快照更新：{timeLabel(directoryState.directory.updatedAt)}，
+                        共 {directoryState.directory.stores.length} 間，
+                        {directoryState.directory.unlocatedCount} 間座標異常未計距離。
+                      </p>
+                    ) : (
+                      <p>尚未載入本次店舖目錄；到附近店家選擇位置或在收藏店家搜尋後才會載入更新時間。</p>
+                    )}
+                    <a href="https://www.family.com.tw/Marketing/zh/Map" target="_blank" rel="noopener noreferrer">
+                      全家官方店舖查詢 ↗
+                    </a>
+                  </section>
+                  <section>
+                    <h3>兩張商品地圖</h3>
+                    <p>
+                      商品名稱、數量與資料時間來自
+                      <a href={MAP_SOURCES.food.url} target="_blank" rel="noopener noreferrer">友善食光</a>
+                      {" 與 "}
+                      <a href={MAP_SOURCES.treasure.url} target="_blank" rel="noopener noreferrer">挖寶專區</a>
+                      的公開查詢；座標直接查詢僅約 1 公里，因此 3 公里店舖目錄的商品
+                      會在展開或收藏後依舊店碼個別查詢。沒有回傳、暫時讀取失敗、
+                      店碼或地點對不上，都不代表缺貨。圖片只在按「查看圖片」時向官方讀取。
+                    </p>
+                  </section>
+                  <section>
+                    <h3>參考價與個人資料</h3>
+                    <p>
+                      八筆公開收據參考價不是現在的官方售價；挖寶折數依使用者規則估算，
+                      不是實際結帳價。收藏與個人原價紀錄各自只存於此瀏覽器的 localStorage，
+                      不需登入、不傳給 API，也不跨裝置同步。清除網站資料後無法復原。
+                      瀏覽器定位只在主動按「使用目前位置」後請求；查商品時座標
+                      四捨五入至小數第四位送給全家商品地圖，不保存定位，也不載入第三方圖磚。
+                    </p>
+                  </section>
+                </div>
+              </section>
             </div>
           </div>
         </div>
       </main>
 
-      <footer id="about" class="site-footer">
+      <footer class="site-footer">
         <div class="container site-footer__inner">
-          <div>
-            <strong>關於這份地圖</strong>
-            <p>
-              非全家官方網站，資料來源：全家地圖。
-              <a href={MAP_SOURCES.food.url} target="_blank" rel="noopener noreferrer">友善食光</a>
-              {" ／ "}
-              <a href={MAP_SOURCES.treasure.url} target="_blank" rel="noopener noreferrer">挖寶專區</a>。
-            </p>
-            <p>商品名稱、數量與資料時間以官方地圖回傳為準；資料可能延遲、不完整或暫無回應，不能作為即時庫存保證。</p>
-          </div>
-          <p class="site-footer__privacy">
-            內建收據參考價跨裝置可見，不代表當前售價；收藏與個人原價紀錄各自僅存於此裝置的 localStorage，
-            個人原價不送往 API、無登入或跨裝置同步。折數為使用者規則的估算，非官方定價或結帳價。
-            定位須由你主動同意，僅用於查詢全家地圖，不使用第三方圖磚。
-          </p>
+          <p>附近好物非全家官方網站；快照和地圖資料可能延遲或缺漏，實際資訊以官方／現場為準。</p>
+          <a href="#about">查看資料來源、限制與隱私說明</a>
         </div>
       </footer>
       <dialog

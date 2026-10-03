@@ -1,7 +1,7 @@
 import { SOURCE_IDS, type Coordinates, type MapSource, type OfficialStore } from "./api";
 import type { Favorite } from "./favorites";
 
-export const NEARBY_RADIUS_METERS = 1_000;
+export const NEARBY_RADIUS_METERS = 3_000;
 
 export interface ListedProduct {
   name: string;
@@ -110,10 +110,15 @@ export function getNearby(stores: readonly MergedStore[], position: Coordinates)
           }],
     )
     .filter((entry) => entry.distanceMeters <= NEARBY_RADIUS_METERS)
-    .sort((first, second) => first.distanceMeters - second.distanceMeters);
+    .sort((first, second) =>
+      first.distanceMeters - second.distanceMeters || first.store.code.localeCompare(second.store.code),
+    );
 }
 
-export function matchesStore(store: MergedStore, search: string): boolean {
+export function matchesStore(
+  store: Pick<MergedStore, "name" | "address" | "code">,
+  search: string,
+): boolean {
   const text = search.trim().normalize("NFKC").toLocaleLowerCase("zh-TW");
   if (!text) return true;
   return [store.name, store.address ?? "", store.code].some((field) =>

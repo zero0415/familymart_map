@@ -1,8 +1,10 @@
 import { render } from "preact";
 import { act } from "preact/test-utils";
+import type { ComponentProps } from "preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { App as StoreFinder } from "./App";
 import { MapApiError, type MapDataClient, type MapQuery, type MapResult } from "./api";
+import type { DirectoryDataClient, StoreDirectory } from "./directory";
 import { FAVORITES_KEY } from "./favorites";
 import type { GeolocationClient } from "./location";
 import { PRICE_NOTES_KEY } from "./price-notes";
@@ -10,8 +12,26 @@ import { makeStore } from "./test-fixtures";
 
 let root: HTMLDivElement;
 
+const directory: StoreDirectory = {
+  updatedAt: new Date().toISOString(),
+  unlocatedCount: 0,
+  stores: [{
+    code: "025336",
+    name: "全家龍潭大草坪店",
+    address: "桃園市龍潭區佳安路5號",
+    latitude: 24.834321,
+    longitude: 121.240801,
+  }],
+};
+const directoryClient: DirectoryDataClient = { load: vi.fn(async () => directory) };
+
+function App(props: ComponentProps<typeof StoreFinder>) {
+  return <StoreFinder directoryClient={directoryClient} {...props} />;
+}
+
 beforeEach(() => {
   window.localStorage.clear();
+  window.history.replaceState(null, "", window.location.pathname);
   root = document.createElement("div");
   document.body.append(root);
 });
@@ -175,10 +195,20 @@ function favoriteCard(name: string): HTMLElement {
 }
 
 function nearbyCard(name: string): HTMLElement {
-  const card = [...root.querySelectorAll<HTMLElement>("#nearby .store-card")].find(
+  const card = [...root.querySelectorAll<HTMLElement>("#nearby .nearby-row")].find(
     (element) => element.querySelector("h3")?.textContent === name,
   );
   if (!card) throw new Error(`Nearby card not found: ${name}`);
+  return card;
+}
+
+function expandNearby(name: string): HTMLElement {
+  const card = nearbyCard(name);
+  const details = card.querySelector<HTMLDetailsElement>("details")!;
+  if (!details.open) act(() => {
+    details.querySelector("summary")!.click();
+    details.dispatchEvent(new Event("toggle"));
+  });
   return card;
 }
 
@@ -213,6 +243,13 @@ function submit(inputSelector: string) {
   });
 }
 
+function go(hash: string) {
+  act(() => {
+    window.history.pushState(null, "", hash);
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  });
+}
+
 describe("interactive store finder", () => {
   it("never requests location automatically and reports denied permission", async () => {
     const { client, getCurrentPosition } = renderDeniedLocationApp();
@@ -239,10 +276,11 @@ describe("interactive store finder", () => {
 
       const saved = favoriteCard("全家台鐵西店");
       const savedDetails = saved.querySelector<HTMLDetailsElement>("details")!;
-      const nearbyDetails = root.querySelector<HTMLDetailsElement>("#nearby .store-card details")!;
+      const nearbyDetails = nearbyCard("全家台鐵西店").querySelector<HTMLDetailsElement>("details")!;
       expect(savedDetails.open).toBe(false);
       expect(nearbyDetails.open).toBe(false);
       act(() => savedDetails.querySelector("summary")!.click());
+      expandNearby("全家台鐵西店");
       expect(savedDetails.open).toBe(true);
       expect(saved.querySelectorAll(".product-panel--treasure .product-list li")).toHaveLength(7);
       expect(saved.querySelector(".product-panel--treasure")?.textContent).toContain("類別／折扣未知");
@@ -291,10 +329,10 @@ describe("interactive store finder", () => {
       setInput("#favorite-prefix", "regular");
       expect(favoriteCard("全家台鐵西店").querySelector(".product-panel--treasure")?.textContent)
         .toContain("目前沒有符合篩選的挖寶商品");
-      expect(root.querySelector("#nearby .store-card")).not.toBeNull();
+      expect(root.querySelector("#nearby .nearby-row")).not.toBeNull();
       setInput("#store-search", "台鐵西");
       expect(root.querySelector("#favorites .store-card")).not.toBeNull();
-      expect(root.querySelector("#nearby .store-card")).not.toBeNull();
+      expect(root.querySelector("#nearby .nearby-row")).not.toBeNull();
       act(() => button(/清除篩選/).click());
       expect(root.querySelectorAll("#favorites .product-panel--treasure .product-list li")).toHaveLength(7);
       expect(root.querySelector<HTMLSelectElement>("#favorite-category")?.value).toBe("all");
@@ -404,7 +442,7 @@ describe("interactive store finder", () => {
       expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toEqual([]);
       expect(root.querySelector("#favorites")?.textContent).toContain("還沒有收藏的分店");
       expect(document.activeElement?.id).toBe("manage-favorites-title");
-      expect(root.querySelector("#nearby .store-card")).not.toBeNull();
+      expect(root.querySelector("#nearby .nearby-row")).not.toBeNull();
       act(() => button(/加入收藏：全家台鐵西店/).click());
       expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toHaveLength(1);
     });
@@ -497,9 +535,8 @@ describe("interactive store finder", () => {
       submit("#area");
       await settleQueries();
       const favorite = favoriteCard("全家台鐵西店");
-      const nearby = nearbyCard("全家另一店");
+      const nearby = expandNearby("全家另一店");
       act(() => favorite.querySelector<HTMLElement>(".store-card__details > summary")!.click());
-      act(() => nearby.querySelector<HTMLElement>(".store-card__details > summary")!.click());
 
       for (const row of [
         productRow(favorite, "treasure", "惜—食品甲"),
@@ -651,9 +688,8 @@ describe("interactive store finder", () => {
       await settleQueries();
 
       const favorite = favoriteCard("全家台鐵西店");
-      const nearby = nearbyCard("全家另一店");
+      const nearby = expandNearby("全家另一店");
       act(() => favorite.querySelector<HTMLElement>(".store-card__details > summary")!.click());
-      act(() => nearby.querySelector<HTMLElement>(".store-card__details > summary")!.click());
       expect(root.querySelectorAll(".product-list__price")).toHaveLength(0);
       expect(root.querySelector("#price-notes")?.textContent).toContain("尚無個人原價紀錄");
       expect(root.querySelector<HTMLAnchorElement>("nav a[href='#price-notes']")).not.toBeNull();
@@ -717,7 +753,7 @@ describe("interactive store finder", () => {
       expect(root.querySelector("#price-notes .price-manager")?.textContent).toContain("NT$42");
       expect(productRow(favoriteCard("全家台鐵西店"), "treasure", "惜—食品甲")
         .querySelector(".product-list__price")?.textContent).toContain("NT$42");
-      expect(productRow(nearbyCard("全家另一店"), "treasure", "跨店不同名稱")
+      expect(productRow(expandNearby("全家另一店"), "treasure", "跨店不同名稱")
         .querySelector(".product-list__price")?.textContent).toContain("NT$42");
 
       const food = productRow(favoriteCard("全家台鐵西店"), "food", "友善便當");
@@ -736,7 +772,7 @@ describe("interactive store finder", () => {
       submit(foodInput);
       expect(food.querySelector(".product-list__price")?.textContent).toContain("NT$45.25");
       expect(root.querySelector("#price-notes .price-manager")?.textContent).toContain("NT$45.25");
-      expect(productRow(nearbyCard("全家另一店"), "treasure", "跨店不同名稱")
+      expect(productRow(expandNearby("全家另一店"), "treasure", "跨店不同名稱")
         .querySelector(".product-list__price")?.textContent).toContain("NT$45.25");
       expect(productRow(favoriteCard("全家台鐵西店"), "treasure", "惜—食品甲")
         .querySelector(".product-list__receipt-price")?.textContent).toContain("該筆五折推算：NT$20");
@@ -917,9 +953,12 @@ describe("interactive store finder", () => {
         <App client={productFixtureClient()} imageClient={{ loadImage }} geolocation={null} />,
         root,
       ));
+      go("#nearby");
       setInput("#area", "taipei");
       submit("#area");
       await settleQueries();
+      go("#favorites");
+      act(() => favoriteCard("全家台鐵西店").querySelector("summary")!.click());
 
       expect(loadImage).not.toHaveBeenCalled();
       expect(root.querySelector(".image-dialog img")).toBeNull();
@@ -943,6 +982,8 @@ describe("interactive store finder", () => {
       expect(root.querySelector<HTMLDialogElement>(".image-dialog")?.open).toBe(false);
       expect(document.activeElement).toBe(foodButton);
 
+      go("#nearby");
+      expandNearby("全家台鐵西店");
       const nearbyButton = root.querySelector<HTMLButtonElement>(
         "#nearby .product-panel--treasure .product-list__image-button",
       )!;
@@ -962,6 +1003,8 @@ describe("interactive store finder", () => {
       const loadImage = vi.fn((_code: string, _signal?: AbortSignal): Promise<string> => pending);
       act(() => render(<App client={fixtureClient()} imageClient={{ loadImage }} geolocation={null} />, root));
       await settleQueries();
+      go("#favorites");
+      act(() => favoriteCard("全家台鐵西店").querySelector("summary")!.click());
 
       const opener = root.querySelector<HTMLButtonElement>(
         "#favorites .product-panel--treasure .product-list__image-button",
@@ -1009,13 +1052,12 @@ describe("interactive store finder", () => {
       }),
     );
     expect(root.querySelector("#nearby")?.textContent).toContain("全家台鐵西店");
+    const details = expandNearby("全家台鐵西店").querySelector<HTMLDetailsElement>("details")!;
     expect(root.querySelector("#nearby")?.textContent).toContain("惜—北海道玉米濃湯洋芋片");
-    const details = root.querySelector<HTMLDetailsElement>("#nearby .store-card details")!;
-    details.open = true;
     act(() => button(/加入收藏：全家台鐵西店/).click());
     await settleQueries();
     expect(client.load).toHaveBeenCalledTimes(2);
-    expect(root.querySelector<HTMLDetailsElement>("#nearby .store-card details")?.open).toBe(true);
+    expect(details.open).toBe(true);
     expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toEqual([
       expect.objectContaining({ code: "018558", name: "全家台鐵西店" }),
     ]);
@@ -1032,7 +1074,7 @@ describe("interactive store finder", () => {
     act(() => render(<App client={client} geolocation={null} />, root));
     setInput("#store-code", "unknown");
     submit("#store-code");
-    expect(root.textContent).toContain("請輸入官方地圖或收據上的數字店代碼");
+    expect(root.textContent).toContain("請輸入商品地圖上的數字舊店碼");
     expect(client.load).not.toHaveBeenCalled();
 
     setInput("#store-code", "018558");
@@ -1074,68 +1116,51 @@ describe("interactive store finder", () => {
     expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toHaveLength(1);
   });
 
-  it("explains why name-only search needs an area, then searches postal map data and saves a match", async () => {
+  it("searches the nationwide directory without location and saves the derived map code", async () => {
     const client = fixtureClient();
     act(() => render(<App client={client} geolocation={null} />, root));
 
-    setInput("#store-search", "台鐵西");
+    expect(directoryClient.load).not.toHaveBeenCalled();
+    setInput("#store-search", "龍潭大草坪");
     submit("#store-search");
-    expect(root.textContent).toContain("請先選擇附近位置，或填三位數郵遞區號");
-    expect(document.activeElement).toBe(root.querySelector("#postal-code"));
+    await act(async () => { await Promise.resolve(); });
+    expect(directoryClient.load).toHaveBeenCalledTimes(1);
     expect(client.load).not.toHaveBeenCalled();
-
-    setInput("#postal-code", "100");
-    submit("#store-search");
-    await settleQueries();
-
-    expect(client.load).toHaveBeenCalledTimes(2);
-    expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
-      source: "treasure",
-      postalCode: "100",
-      favoriteCodes: [],
-    }));
-    expect(root.querySelector("#nearby-title")?.textContent).toContain("分店搜尋結果");
-    expect(root.querySelector("#nearby .store-card")?.textContent).toContain("全家台鐵西店");
-    expect(root.querySelector(".search-preview")?.textContent).toContain("已載入清單符合 1 間分店");
+    expect(root.querySelector(".search-preview")?.textContent).toContain("找到 1 間分店");
+    expect(root.querySelector(".search-preview")?.textContent).toContain("全家龍潭大草坪店");
 
     const preview = root.querySelector<HTMLButtonElement>(".search-preview li button")!;
     act(() => preview.click());
-    await settleQueries();
-
-    expect(client.load).toHaveBeenCalledTimes(4);
+    await act(async () => { await Promise.resolve(); });
     expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
+      favoriteCodes: ["025336"],
       position: { latitude: 25.0479, longitude: 121.5171 },
-      favoriteCodes: ["018558"],
     }));
-    expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
-      source: "treasure",
-      postalCode: "100",
-      favoriteCodes: [],
-    }));
-    expect(root.querySelector("#favorites .store-card")?.textContent).toContain("惜—北海道玉米濃湯洋芋片");
     expect(JSON.parse(window.localStorage.getItem(FAVORITES_KEY)!)).toEqual([
-      expect.objectContaining({ code: "018558" }),
+      expect.objectContaining({ code: "025336", name: "全家龍潭大草坪店" }),
     ]);
     expect(root.querySelector(".search-preview__saved")?.textContent).toBe("已收藏");
     expect(root.querySelector(".search-preview li button[aria-label^='移除']")).toBeNull();
     expect(root.querySelector("#favorites .manage-favorites-link")).not.toBeNull();
   });
 
-  it("submits a name search within a loaded area and presents matching stores next to the field", async () => {
+  it("keeps nearby and saved stores visible while searching for a different nationwide store", async () => {
+    saveFixtureFavorite();
     const client = fixtureClient();
     act(() => render(<App client={client} geolocation={null} />, root));
     setInput("#area", "taipei");
     submit("#area");
     await settleQueries();
 
-    setInput("#store-search", "台鐵西");
+    setInput("#store-search", "龍潭大草坪");
     submit("#store-search");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await act(async () => { await Promise.resolve(); });
 
-    expect(root.querySelector(".search-preview")?.textContent).toContain("全家台鐵西店");
-    expect(root.querySelector(".name-search [role='status']")?.textContent)
-      .toContain("已載入清單符合 1 間店");
-    expect(document.activeElement).toBe(root.querySelector("#nearby-title"));
+    expect(root.querySelector(".search-preview")?.textContent).toContain("全家龍潭大草坪店");
+    expect(root.querySelector(".search-preview [role='status']")?.textContent)
+      .toContain("找到 1 間分店");
+    expect(root.querySelector("#favorites")?.textContent).toContain("全家台鐵西店");
+    expect(root.querySelector("#nearby")?.textContent).toContain("全家台鐵西店");
     expect(client.load).toHaveBeenCalledTimes(2);
   });
 
@@ -1157,7 +1182,7 @@ describe("interactive store finder", () => {
     };
     act(() => render(<App client={client} geolocation={null} />, root));
     setInput("#postal-code", "100");
-    submit("#store-search");
+    submit("#postal-code");
     await settleQueries();
 
     expect(client.load).toHaveBeenCalledWith(expect.objectContaining({
@@ -1174,7 +1199,8 @@ describe("interactive store finder", () => {
       .toContain("符合 1 / 1 項");
     expect(root.querySelector("#favorites .store-card .source-badge--treasure")?.textContent)
       .toContain("1 / 1 項符合");
-    expect(root.querySelector("#nearby .store-card .source-badge--treasure")?.textContent)
+    expandNearby("全家台鐵西店");
+    expect(root.querySelector("#nearby .nearby-row .source-badge--treasure")?.textContent)
       .toContain("1 項明細");
     expect(client.load).toHaveBeenCalledTimes(4);
   });
@@ -1187,23 +1213,21 @@ describe("interactive store finder", () => {
       }),
     };
     act(() => render(<App client={client} geolocation={null} />, root));
-    setInput("#store-search", "台鐵西");
     setInput("#postal-code", "10a");
-    submit("#store-search");
+    submit("#postal-code");
     expect(root.textContent).toContain("請輸入三位數郵遞區號");
     expect(client.load).not.toHaveBeenCalled();
 
     setInput("#postal-code", "100");
-    submit("#store-search");
+    submit("#postal-code");
     await settleQueries();
 
     expect(root.querySelector(".source-status--food [role='alert']")?.textContent)
       .toContain("友善食光暫時讀取失敗");
-    expect(root.querySelector(".search-preview")?.textContent)
-      .toContain("部分地圖讀取失敗，搜尋結果不完整");
     expect(root.querySelector("#nearby")?.textContent)
       .toContain("部分地圖資料暫時無法確認");
-    expect(root.querySelector("#nearby")?.textContent).not.toContain("缺貨");
+    expect(root.querySelector("#nearby")?.textContent).toContain("結果不完整，不能推斷缺貨");
+    expect(root.querySelector("#nearby")?.textContent).not.toContain("已缺貨");
   });
 
   it("does not interpret an empty postal map response as a missing store or confirmed stock level", async () => {
@@ -1215,13 +1239,12 @@ describe("interactive store finder", () => {
       })),
     };
     act(() => render(<App client={client} geolocation={null} />, root));
-    setInput("#store-search", "台鐵西");
     setInput("#postal-code", "100");
-    submit("#store-search");
+    submit("#postal-code");
     await settleQueries();
 
-    expect(root.querySelector(".search-preview")?.textContent)
-      .toContain("目前地圖未回傳符合店名的店家");
+    expect(root.querySelector("#nearby")?.textContent)
+      .toContain("目前沒有回傳此郵遞區號的店");
     expect(root.querySelector("#nearby")?.textContent).toContain("不代表店家缺貨");
     expect(root.querySelector("#favorites")?.textContent).toContain("還沒有收藏的分店");
   });
@@ -1241,9 +1264,10 @@ describe("interactive store finder", () => {
     await settleQueries();
 
     expect(root.querySelector("#nearby")?.textContent).toContain("全家台鐵西店");
-    expect(root.querySelector("#nearby")?.textContent).toContain("部分地圖讀取失敗");
+    expect(root.querySelector("#nearby")?.textContent).toContain("部分商品地圖讀取失敗");
     expect(root.querySelector(".source-status--food [role='alert']")?.textContent)
       .toContain("友善食光讀取失敗");
+    expandNearby("全家台鐵西店");
     expect(root.querySelector("#nearby")?.textContent).toContain("惜—北海道玉米濃湯洋芋片");
 
     act(() => button(/重新查詢/).click());
@@ -1254,7 +1278,7 @@ describe("interactive store finder", () => {
     expect(root.textContent).toContain("至少間隔 1 分鐘");
   });
 
-  it("does not claim a missing name match when both map requests fail", async () => {
+  it("reports failed map lookups without claiming a store is out of stock", async () => {
     const client: MapDataClient = {
       load: vi.fn(async () => {
         throw new MapApiError("service", "官方地圖服務暫時失敗");
@@ -1263,11 +1287,9 @@ describe("interactive store finder", () => {
     act(() => render(<App client={client} geolocation={null} />, root));
     setInput("#area", "taipei");
     submit("#area");
-    setInput("#store-search", "台鐵西");
     await settleQueries();
 
-    expect(root.querySelector("#nearby")?.textContent).toContain("部分地圖資料暫時無法確認");
-    expect(root.querySelector("#nearby")?.textContent).toContain("兩張地圖都無法讀取");
+    expect(root.querySelector("#nearby")?.textContent).toContain("兩張商品地圖都無法讀取");
     expect(root.querySelector("#nearby")?.textContent).not.toContain("附近沒有符合搜尋的店");
   });
 });
