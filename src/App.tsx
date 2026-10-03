@@ -188,21 +188,36 @@ function PriceNoteControls({
   const [priceText, setPriceText] = useState(note ? String(note.priceCents / 100) : "");
   const [error, setError] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [editing, setEditing] = useState(false);
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const summaryRef = useRef<HTMLElement>(null);
+  const editRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
+  const focusAfterAction = useRef<"edit" | "input" | null>(null);
 
   useLayoutEffect(() => {
     if (confirmClear) cancelClearRef.current?.focus();
   }, [confirmClear]);
+
+  useLayoutEffect(() => {
+    if (focusAfterAction.current === "edit") editRef.current?.focus();
+    if (focusAfterAction.current === "input") inputRef.current?.focus();
+    focusAfterAction.current = null;
+  });
 
   function savePrice(event: Event) {
     event.preventDefault();
     try {
       priceNotes.save({ code, name, priceCents: parseOriginalPrice(priceText) });
       setError(null);
-      if (detailsRef.current) detailsRef.current.open = false;
-      summaryRef.current?.focus();
+      if (manager) {
+        if (detailsRef.current) detailsRef.current.open = false;
+        summaryRef.current?.focus();
+      } else {
+        focusAfterAction.current = "edit";
+        setEditing(false);
+      }
     } catch (cause) {
       if (!(cause instanceof PriceNoteValidationError)) {
         console.error("Unexpected personal price note error", cause);
@@ -212,6 +227,7 @@ function PriceNoteControls({
           ? cause.message
           : "無法更新個人原價紀錄；請稍後重試。",
       );
+      inputRef.current?.focus();
     }
   }
 
@@ -219,9 +235,13 @@ function PriceNoteControls({
     try {
       priceNotes.clear(code);
       setConfirmClear(false);
-      if (manager) document.getElementById("price-notes-title")?.focus();
-      else summaryRef.current?.focus();
-      if (detailsRef.current) detailsRef.current.open = false;
+      if (manager) {
+        document.getElementById("price-notes-title")?.focus();
+        if (detailsRef.current) detailsRef.current.open = false;
+      } else {
+        focusAfterAction.current = "input";
+        setEditing(false);
+      }
     } catch (cause) {
       if (!(cause instanceof PriceNoteValidationError)) {
         console.error("Unexpected personal price note error", cause);
@@ -237,6 +257,107 @@ function PriceNoteControls({
   const inputId = `price-input-${id}`;
   const hintId = `price-hint-${id}`;
   const errorId = `price-error-${id}`;
+
+  const content = (
+    <div class="price-note-controls__content">
+      {manager && <p>{name}・商品代碼 {code}</p>}
+      <form onSubmit={savePrice} noValidate>
+        <label for={inputId}>
+          {manager ? "商品原價（折扣前，NT$）" : "使用者自行輸入原價（折扣前，非官方，NT$）"}
+        </label>
+        <input
+          id={inputId}
+          ref={inputRef}
+          type="text"
+          inputMode="decimal"
+          autoComplete="off"
+          value={priceText}
+          aria-describedby={`${hintId}${error ? ` ${errorId}` : ""}`}
+          aria-invalid={error ? "true" : undefined}
+          onInput={(event) => {
+            setPriceText(event.currentTarget.value);
+            setError(null);
+          }}
+        />
+        <p id={hintId} class="field-hint">
+          僅記自己確認的原價，非官方定價。例：39 或 39.50；限 0.01～99,999.99。
+        </p>
+        {error && <p id={errorId} class="inline-alert" role="alert">{error}</p>}
+        <div class="price-note-controls__actions">
+          <button type="submit">儲存原價</button>
+          {(manager || note) && (
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmClear(false);
+                setError(null);
+                if (manager) {
+                  if (detailsRef.current) detailsRef.current.open = false;
+                  summaryRef.current?.focus();
+                } else {
+                  focusAfterAction.current = "edit";
+                  setEditing(false);
+                }
+              }}
+            >
+              取消
+            </button>
+          )}
+          {note && !confirmClear && (
+            <button type="button" onClick={() => setConfirmClear(true)}>清除紀錄…</button>
+          )}
+        </div>
+      </form>
+      {confirmClear && (
+        <div class="price-note-controls__confirm" role="group" aria-label={`確認清除${name}的個人原價`}>
+          <p>確定清除「{name}」（商品代碼 {code}）的個人原價紀錄？</p>
+          <div class="price-note-controls__actions">
+            <button type="button" ref={cancelClearRef} onClick={() => setConfirmClear(false)}>
+              取消清除
+            </button>
+            <button type="button" onClick={clearPrice}>確認清除原價</button>
+          </div>
+        </div>
+      )}
+      {manager && priceNotes.storageWarning && (
+        <p class="inline-alert" role="alert">{priceNotes.storageWarning}</p>
+      )}
+    </div>
+  );
+
+  if (!manager) {
+    return (
+      <div class="price-note-controls price-note-controls--inline">
+        {note ? (
+          <>
+            <p class="product-list__price">
+              使用者自行輸入原價／非官方：<strong>{formatOriginalPrice(note.priceCents)}</strong>
+            </p>
+            {!editing && (
+              <button
+                type="button"
+                class="price-note-controls__edit"
+                ref={editRef}
+                onClick={() => {
+                  setPriceText(String(note.priceCents / 100));
+                  setError(null);
+                  setEditing(true);
+                }}
+              >
+                修改個人原價
+              </button>
+            )}
+          </>
+        ) : (
+          <p class="product-list__unrecorded">尚未記錄個人原價。</p>
+        )}
+        {(!note || editing) && content}
+        {priceNotes.storageWarning && (
+          <p class="inline-alert" role="alert">{priceNotes.storageWarning}</p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <details
@@ -254,58 +375,7 @@ function PriceNoteControls({
       <summary ref={summaryRef}>
         {note ? "修改或清除個人原價" : "記錄個人原價"}
       </summary>
-      <div class="price-note-controls__content">
-        <p>{name}・商品代碼 {code}</p>
-        <form onSubmit={savePrice} noValidate>
-          <label for={inputId}>商品原價（折扣前，NT$）</label>
-          <input
-            id={inputId}
-            type="text"
-            inputMode="decimal"
-            autoComplete="off"
-            value={priceText}
-            aria-describedby={`${hintId}${error ? ` ${errorId}` : ""}`}
-            aria-invalid={error ? "true" : undefined}
-            onInput={(event) => {
-              setPriceText(event.currentTarget.value);
-              setError(null);
-            }}
-          />
-          <p id={hintId} class="field-hint">
-            僅記自己確認的原價，非官方定價。例：39 或 39.50；限 0.01～99,999.99。
-          </p>
-          {error && <p id={errorId} class="inline-alert" role="alert">{error}</p>}
-          <div class="price-note-controls__actions">
-            <button type="submit">儲存原價</button>
-            <button
-              type="button"
-              onClick={() => {
-                if (detailsRef.current) detailsRef.current.open = false;
-                summaryRef.current?.focus();
-              }}
-            >
-              取消
-            </button>
-            {note && !confirmClear && (
-              <button type="button" onClick={() => setConfirmClear(true)}>清除紀錄…</button>
-            )}
-          </div>
-        </form>
-        {confirmClear && (
-          <div class="price-note-controls__confirm" role="group" aria-label={`確認清除${name}的個人原價`}>
-            <p>確定清除「{name}」（商品代碼 {code}）的個人原價紀錄？</p>
-            <div class="price-note-controls__actions">
-              <button type="button" ref={cancelClearRef} onClick={() => setConfirmClear(false)}>
-                取消清除
-              </button>
-              <button type="button" onClick={clearPrice}>確認清除原價</button>
-            </div>
-          </div>
-        )}
-        {priceNotes.storageWarning && (
-          <p class="inline-alert" role="alert">{priceNotes.storageWarning}</p>
-        )}
-      </div>
+      {content}
     </details>
   );
 }
@@ -434,7 +504,6 @@ function SourceDetails({
                     ? classifyTreasureProduct(product)
                     : null;
                 const imageCode = product.code;
-                const note = imageCode ? priceNotes.byCode.get(imageCode) : undefined;
                 const reference = findReceiptPrice(source, imageCode);
                 return (
                   <li key={`${product.groupName}-${product.name}-${index}`}>
@@ -467,20 +536,24 @@ function SourceDetails({
                       ) : (
                         <small>未提供商品代碼，無法紀錄原價。</small>
                       )}
-                      {reference && (
-                        <div class="product-list__receipt-price">
-                          <p>收據原價：<strong>{formatOriginalPrice(reference.originalCents)}</strong></p>
-                          <p>該筆五折推算：<strong>{formatOriginalPrice(reference.halfPriceCents)}</strong></p>
-                          <small>{reference.source}・{reference.receiptDate}</small>
+                      {imageCode && (
+                        <div class="product-list__prices">
+                          {reference && (
+                            <div class="product-list__receipt-price">
+                              <p>收據原價：<strong>{formatOriginalPrice(reference.originalCents)}</strong></p>
+                              <p>該筆五折推算：<strong>{formatOriginalPrice(reference.halfPriceCents)}</strong></p>
+                              <small>{reference.source}資料來源：{reference.receiptDate}</small>
+                            </div>
+                          )}
+                          <PriceNoteControls
+                            key={`${editorScope}-${source}-${index}-${imageCode}`}
+                            id={`${editorScope}-${source}-${index}-${imageCode}`}
+                            code={imageCode}
+                            name={product.name}
+                            priceNotes={priceNotes}
+                          />
                         </div>
                       )}
-                      {note ? (
-                        <p class="product-list__price">
-                          個人紀錄原價／非官方：<strong>{formatOriginalPrice(note.priceCents)}</strong>
-                        </p>
-                      ) : imageCode ? (
-                        <p class="product-list__unrecorded">尚未記錄個人原價。</p>
-                      ) : null}
                     </div>
                     <div class="product-list__side">
                       <span class="product-list__quantity">
@@ -500,15 +573,6 @@ function SourceDetails({
                         <span class="product-list__image-unavailable">未提供圖片代碼</span>
                       )}
                     </div>
-                    {imageCode && (
-                      <PriceNoteControls
-                        key={`${editorScope}-${source}-${index}-${imageCode}`}
-                        id={`${editorScope}-${source}-${index}-${imageCode}`}
-                        code={imageCode}
-                        name={product.name}
-                        priceNotes={priceNotes}
-                      />
-                    )}
                   </li>
                 );
               })}
@@ -1731,18 +1795,28 @@ export function App({
                     </p>
                   </div>
                 </div>
-                <ul class="receipt-price-list">
-                  {Object.entries(RECEIPT_PRICE_REFERENCES)
-                    .sort(([first], [second]) => first.localeCompare(second))
-                    .map(([code, reference]) => (
-                      <li key={code}>
-                        <strong>{reference.name}</strong>
-                        <small>商品代碼 {code}</small>
-                        <p>收據原價：<strong>{formatOriginalPrice(reference.originalCents)}</strong></p>
-                        <p>該筆五折推算：<strong>{formatOriginalPrice(reference.halfPriceCents)}</strong></p>
-                      </li>
-                    ))}
-                </ul>
+                <details class="price-list-details">
+                  <summary>
+                    <span class="price-list-details__expand">
+                      展開收據參考價清單（{Object.keys(RECEIPT_PRICE_REFERENCES).length} 筆）
+                    </span>
+                    <span class="price-list-details__collapse">
+                      收合收據參考價清單（{Object.keys(RECEIPT_PRICE_REFERENCES).length} 筆）
+                    </span>
+                  </summary>
+                  <ul class="receipt-price-list">
+                    {Object.entries(RECEIPT_PRICE_REFERENCES)
+                      .sort(([first], [second]) => first.localeCompare(second))
+                      .map(([code, reference]) => (
+                        <li key={code}>
+                          <strong>{reference.name}</strong>
+                          <small>商品代碼 {code}</small>
+                          <p>收據原價：<strong>{formatOriginalPrice(reference.originalCents)}</strong></p>
+                          <p>該筆五折推算：<strong>{formatOriginalPrice(reference.halfPriceCents)}</strong></p>
+                        </li>
+                      ))}
+                  </ul>
+                </details>
               </section>
 
               <section id="price-notes" class="result-section" aria-labelledby="price-notes-title">
@@ -1760,34 +1834,44 @@ export function App({
                 </div>
                 {priceStorageWarning && <p class="inline-alert" role="alert">{priceStorageWarning}</p>}
                 {priceActionMessage && <p class="form-message" role="status">{priceActionMessage}</p>}
-                {priceNotes.length > 0 ? (
-                  <ul class="price-manager">
-                    {priceNotes.map((note) => (
-                      <li key={note.code}>
-                        <div class="price-manager__identity">
-                          <strong>{note.name}</strong>
-                          <small>商品代碼 {note.code}</small>
-                          <span>個人紀錄原價／非官方：{formatOriginalPrice(note.priceCents)}</span>
-                        </div>
-                        <PriceNoteControls
-                          id={`manager-${note.code}`}
-                          code={note.code}
-                          name={note.name}
-                          manager
-                          priceNotes={priceNoteActions}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div class="empty-state">
-                    <h3>尚無個人原價紀錄</h3>
-                    <p>
-                      展開收藏或附近分店的商品，對有商品代碼的品項按「記錄個人原價」；
-                      未提供代碼的品項不會依名稱混記。
-                    </p>
-                  </div>
-                )}
+                <details class="price-list-details">
+                  <summary>
+                    <span class="price-list-details__expand">
+                      展開個人原價紀錄清單（{priceNotes.length} 筆）
+                    </span>
+                    <span class="price-list-details__collapse">
+                      收合個人原價紀錄清單（{priceNotes.length} 筆）
+                    </span>
+                  </summary>
+                  {priceNotes.length > 0 ? (
+                    <ul class="price-manager">
+                      {priceNotes.map((note) => (
+                        <li key={note.code}>
+                          <div class="price-manager__identity">
+                            <strong>{note.name}</strong>
+                            <small>商品代碼 {note.code}</small>
+                            <span>個人紀錄原價／非官方：{formatOriginalPrice(note.priceCents)}</span>
+                          </div>
+                          <PriceNoteControls
+                            id={`manager-${note.code}`}
+                            code={note.code}
+                            name={note.name}
+                            manager
+                            priceNotes={priceNoteActions}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div class="empty-state">
+                      <h3>尚無個人原價紀錄</h3>
+                      <p>
+                        展開收藏或附近分店的商品，在有商品代碼的品項價錢區塊輸入並儲存原價；
+                        未提供代碼的品項不會依名稱混記。
+                      </p>
+                    </div>
+                  )}
+                </details>
               </section>
 
               <section id="nearby" class="result-section" aria-labelledby="nearby-title">

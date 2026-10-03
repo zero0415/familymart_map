@@ -879,20 +879,37 @@ ul {
   font-weight: 700;
 }
 
-.favorite-manager {
+.favorite-manager,
+.price-list-details {
+  min-width: 0;
   padding: 0 17px;
   border: 1px solid #d8e5dc;
   border-radius: 14px;
   background: white;
 }
 
-.favorite-manager summary {
+.favorite-manager > summary,
+.price-list-details > summary {
   min-height: 48px;
   padding: 13px 0;
   color: #146356;
   font-size: 13px;
   font-weight: 800;
   cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.price-list-details__collapse,
+.price-list-details[open] .price-list-details__expand {
+  display: none;
+}
+
+.price-list-details[open] .price-list-details__collapse {
+  display: inline;
+}
+
+.price-list-details > .empty-state {
+  margin: 14px 0 16px;
 }
 
 .favorite-manager__list {
@@ -973,17 +990,16 @@ ul {
   color: #fff;
 }
 
-.price-manager {
-  padding: 0 17px;
-  border: 1px solid #d8e5dc;
-  border-radius: 14px;
-  background: white;
+.price-manager,
+.receipt-price-list {
+  border-top: 1px solid #e3ebe4;
 }
 
 .receipt-price-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+  padding: 14px 0 16px;
 }
 
 .receipt-price-list li {
@@ -1111,7 +1127,8 @@ ul {
   margin-top: 10px;
 }
 
-.price-note-controls__actions button {
+.price-note-controls__actions button,
+.price-note-controls__edit {
   min-height: 44px;
   padding: 8px 10px;
   border: 1px solid #b9cec0;
@@ -1120,6 +1137,22 @@ ul {
   color: #195a50;
   font-size: 12px;
   font-weight: 800;
+}
+
+.price-note-controls--inline {
+  flex: 0 1 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.price-note-controls--inline .price-note-controls__content {
+  padding: 0;
+  border: 0;
+}
+
+.price-note-controls__edit {
+  margin-top: 8px;
 }
 
 .price-note-controls__actions button[type="submit"] {
@@ -1460,14 +1493,29 @@ button.favorite-button:hover {
   color: #6b7e70;
 }
 
-.product-list__receipt-price {
+.product-list__prices {
+  min-width: 0;
+  width: 100%;
   margin-top: 8px;
-  padding-left: 9px;
+  padding: 10px;
+  border: 1px solid #e5dccb;
+  border-radius: 9px;
+  background: #fffdf9;
+  overflow-wrap: anywhere;
+}
+
+.product-list__receipt-price {
+  padding: 0 0 10px 9px;
   border-left: 3px solid #bb8745;
+  border-bottom: 1px solid #e5dccb;
   color: #70461e;
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+}
+
+.product-list__receipt-price + .price-note-controls--inline {
+  margin-top: 8px;
 }
 
 .product-list__receipt-price p + p {
