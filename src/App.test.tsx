@@ -206,7 +206,9 @@ describe("interactive store finder", () => {
         .toHaveLength(7);
       expect(root.querySelector("#nearby .source-badge--treasure")?.textContent)
         .toContain("7 項明細");
-      expect(root.querySelector("#nearby .product-list__labels")).toBeNull();
+      expect(root.querySelector("#nearby .product-panel--treasure .product-list__labels")
+        ?.textContent).toContain("5折");
+      expect(root.querySelector("#nearby .product-panel--food .product-list__labels")).toBeNull();
       expect(root.querySelector<HTMLDetailsElement>("#favorites .store-card details")?.open).toBe(true);
 
       setInput("#favorite-category", "alcohol");

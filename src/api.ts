@@ -277,6 +277,9 @@ export class MapProductImageClient implements ProductImageClient {
         `官方商品圖片服務回報錯誤（代碼 ${envelope.data.code}）。請稍後重試。`,
       );
     }
+    if (envelope.data.data == null) {
+      throw new MapApiError("response", "官方目前未提供這件商品的圖片。");
+    }
 
     const image = z.object({ imageUrl: z.string().trim().nullish() }).safeParse(envelope.data.data);
     if (!image.success) {

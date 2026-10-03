@@ -236,7 +236,7 @@ function SourceDetails({
             <ul class="product-list">
               {visibleProducts.map((product, index) => {
                 const classification =
-                  source === "treasure" && treasureFilters
+                  source === "treasure"
                     ? classifyTreasureProduct(product)
                     : null;
                 const imageCode = product.code;

@@ -101,6 +101,8 @@ describe("official map response", () => {
         .rejects.toThrow(/未提供/);
       await expect(clientFor({ code: 1, data: { imageUrl: null } }).loadImage("0065108"))
         .rejects.toThrow(/未提供/);
+      await expect(clientFor({ code: 1, data: null }).loadImage("0065108"))
+        .rejects.toThrow(/未提供/);
       await expect(clientFor({ code: 0 }).loadImage("0065108"))
         .rejects.toThrow(/代碼 0/);
       await expect(clientFor({ code: 1, data: { imageUrl: 42 } }).loadImage("0065108"))
