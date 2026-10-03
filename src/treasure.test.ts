@@ -64,18 +64,19 @@ describe("favorite treasure product filtering", () => {
     expect(filterTreasureProducts(products, DEFAULT_TREASURE_FILTERS)).toBe(products);
   });
 
-  it("intersects category, prefix and discount, while preserving unknown products under 全部", () => {
+  it("intersects category and prefix without filtering estimated discounts", () => {
     const filters: TreasureFilters = {
       category: "supplies",
       prefix: "saving",
-      discount: "3折",
     };
     expect(hasActiveTreasureFilters(filters)).toBe(true);
     expect(filterTreasureProducts(products, filters).map(({ name }) => name)).toEqual(["惜-用品"]);
-    expect(filterTreasureProducts(products, { ...filters, category: "unknown", discount: "未知" }))
+    expect(filterTreasureProducts(products, { ...filters, category: "unknown" }))
       .toEqual([products[6]]);
-    expect(filterTreasureProducts(products, { ...filters, category: "alcohol", discount: "5折" }))
-      .toEqual([]);
+    expect(filterTreasureProducts(products, { ...filters, category: "supplies", prefix: "all" }))
+      .toEqual([products[2], products[3]]);
+    expect(filterTreasureProducts(products, { ...filters, category: "alcohol", prefix: "regular" }))
+      .toEqual([products[5]]);
     expect(products).toHaveLength(7);
   });
 });

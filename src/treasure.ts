@@ -7,13 +7,11 @@ export type TreasurePrefix = "saving" | "regular";
 export interface TreasureFilters {
   category: "all" | TreasureCategory;
   prefix: "all" | TreasurePrefix;
-  discount: "all" | TreasureDiscount;
 }
 
 export const DEFAULT_TREASURE_FILTERS: TreasureFilters = {
   category: "all",
   prefix: "all",
-  discount: "all",
 };
 
 export const TREASURE_CATEGORY_LABELS: Record<TreasureCategory, string> = {
@@ -59,7 +57,7 @@ export function classifyTreasureProduct(product: Pick<ListedProduct, "name" | "g
 }
 
 export function hasActiveTreasureFilters(filters: TreasureFilters): boolean {
-  return filters.category !== "all" || filters.prefix !== "all" || filters.discount !== "all";
+  return filters.category !== "all" || filters.prefix !== "all";
 }
 
 export function filterTreasureProducts(
@@ -68,11 +66,10 @@ export function filterTreasureProducts(
 ): readonly ListedProduct[] {
   if (!hasActiveTreasureFilters(filters)) return products;
   return products.filter((product) => {
-    const { category, saving, discount } = classifyTreasureProduct(product);
+    const { category, saving } = classifyTreasureProduct(product);
     return (
       (filters.category === "all" || category === filters.category) &&
-      (filters.prefix === "all" || (saving ? "saving" : "regular") === filters.prefix) &&
-      (filters.discount === "all" || discount === filters.discount)
+      (filters.prefix === "all" || (saving ? "saving" : "regular") === filters.prefix)
     );
   });
 }

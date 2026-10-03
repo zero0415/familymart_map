@@ -28,6 +28,17 @@ import {
   type GeolocationClient,
 } from "./location";
 import {
+  formatOriginalPrice,
+  parseOriginalPrice,
+  PriceNoteStorageError,
+  PriceNoteValidationError,
+  readPriceNotes,
+  removePriceNote,
+  upsertPriceNote,
+  writePriceNotes,
+  type PriceNote,
+} from "./price-notes";
+import {
   distanceMeters,
   formatDistance,
   getNearby,
@@ -79,12 +90,6 @@ const PREFIX_FILTER_OPTIONS = [
   { value: "saving", label: "惜-開頭" },
   { value: "regular", label: "非惜-開頭" },
 ] as const satisfies readonly { value: TreasureFilters["prefix"]; label: string }[];
-const DISCOUNT_FILTER_OPTIONS = [
-  { value: "all", label: "全部" },
-  { value: "5折", label: "5折" },
-  { value: "3折", label: "3折" },
-  { value: "未知", label: "未知" },
-] as const satisfies readonly { value: TreasureFilters["discount"]; label: string }[];
 
 type ImagePreview =
   | { name: string; status: "loading" }
@@ -129,6 +134,175 @@ function initialFavorites(storageOverride: Storage | null | undefined): {
           : "無法讀取裝置收藏；本次收藏僅保留在目前頁面。",
     };
   }
+}
+
+function initialPriceNotes(storageOverride: Storage | null | undefined): {
+  notes: PriceNote[];
+  storage: Storage | null;
+  warning: string | null;
+} {
+  try {
+    const storage = storageOverride === undefined ? window.localStorage : storageOverride;
+    if (!storage) {
+      throw new PriceNoteStorageError("無法使用裝置儲存空間；本次個人原價紀錄僅保留在目前頁面。");
+    }
+    return { notes: readPriceNotes(storage), storage, warning: null };
+  } catch (error) {
+    return {
+      notes: [],
+      storage: null,
+      warning:
+        error instanceof Error
+          ? error.message
+          : "無法讀取裝置中的個人原價紀錄；本次紀錄僅保留在目前頁面。",
+    };
+  }
+}
+
+interface PriceNoteActions {
+  byCode: ReadonlyMap<string, PriceNote>;
+  storageWarning: string | null;
+  save: (note: PriceNote) => void;
+  clear: (code: string) => void;
+}
+
+function PriceNoteControls({
+  code,
+  name,
+  id,
+  manager = false,
+  priceNotes,
+}: {
+  code: string;
+  name: string;
+  id: string;
+  manager?: boolean;
+  priceNotes: PriceNoteActions;
+}) {
+  const note = priceNotes.byCode.get(code);
+  const [priceText, setPriceText] = useState(note ? String(note.priceCents / 100) : "");
+  const [error, setError] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const summaryRef = useRef<HTMLElement>(null);
+  const cancelClearRef = useRef<HTMLButtonElement>(null);
+
+  useLayoutEffect(() => {
+    if (confirmClear) cancelClearRef.current?.focus();
+  }, [confirmClear]);
+
+  function savePrice(event: Event) {
+    event.preventDefault();
+    try {
+      priceNotes.save({ code, name, priceCents: parseOriginalPrice(priceText) });
+      setError(null);
+      if (detailsRef.current) detailsRef.current.open = false;
+      summaryRef.current?.focus();
+    } catch (cause) {
+      if (!(cause instanceof PriceNoteValidationError)) {
+        console.error("Unexpected personal price note error", cause);
+      }
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "無法更新個人原價紀錄；請稍後重試。",
+      );
+    }
+  }
+
+  function clearPrice() {
+    try {
+      priceNotes.clear(code);
+      setConfirmClear(false);
+      if (manager) document.getElementById("price-notes-title")?.focus();
+      else summaryRef.current?.focus();
+      if (detailsRef.current) detailsRef.current.open = false;
+    } catch (cause) {
+      if (!(cause instanceof PriceNoteValidationError)) {
+        console.error("Unexpected personal price note error", cause);
+      }
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "無法清除個人原價紀錄；請稍後重試。",
+      );
+    }
+  }
+
+  const inputId = `price-input-${id}`;
+  const hintId = `price-hint-${id}`;
+  const errorId = `price-error-${id}`;
+
+  return (
+    <details
+      ref={detailsRef}
+      class="price-note-controls"
+      onToggle={(event) => {
+        if (event.currentTarget.open) {
+          setPriceText(note ? String(note.priceCents / 100) : "");
+          setError(null);
+        } else {
+          setConfirmClear(false);
+        }
+      }}
+    >
+      <summary ref={summaryRef}>
+        {note ? "修改或清除個人原價" : "記錄個人原價"}
+      </summary>
+      <div class="price-note-controls__content">
+        <p>{name}・商品代碼 {code}</p>
+        <form onSubmit={savePrice} noValidate>
+          <label for={inputId}>商品原價（折扣前，NT$）</label>
+          <input
+            id={inputId}
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            value={priceText}
+            aria-describedby={`${hintId}${error ? ` ${errorId}` : ""}`}
+            aria-invalid={error ? "true" : undefined}
+            onInput={(event) => {
+              setPriceText(event.currentTarget.value);
+              setError(null);
+            }}
+          />
+          <p id={hintId} class="field-hint">
+            僅記自己確認的原價，非官方定價。例：39 或 39.50；限 0.01～99,999.99。
+          </p>
+          {error && <p id={errorId} class="inline-alert" role="alert">{error}</p>}
+          <div class="price-note-controls__actions">
+            <button type="submit">儲存原價</button>
+            <button
+              type="button"
+              onClick={() => {
+                if (detailsRef.current) detailsRef.current.open = false;
+                summaryRef.current?.focus();
+              }}
+            >
+              取消
+            </button>
+            {note && !confirmClear && (
+              <button type="button" onClick={() => setConfirmClear(true)}>清除紀錄…</button>
+            )}
+          </div>
+        </form>
+        {confirmClear && (
+          <div class="price-note-controls__confirm" role="group" aria-label={`確認清除${name}的個人原價`}>
+            <p>確定清除「{name}」（商品代碼 {code}）的個人原價紀錄？</p>
+            <div class="price-note-controls__actions">
+              <button type="button" ref={cancelClearRef} onClick={() => setConfirmClear(false)}>
+                取消清除
+              </button>
+              <button type="button" onClick={clearPrice}>確認清除原價</button>
+            </div>
+          </div>
+        )}
+        {priceNotes.storageWarning && (
+          <p class="inline-alert" role="alert">{priceNotes.storageWarning}</p>
+        )}
+      </div>
+    </details>
+  );
 }
 
 function SourceStatus({
@@ -189,12 +363,16 @@ function SourceDetails({
   data,
   state,
   treasureFilters,
+  editorScope,
+  priceNotes,
   onShowImage,
 }: {
   source: MapSource;
   data: SourceProducts | undefined;
   state: LoadState;
   treasureFilters?: TreasureFilters;
+  editorScope: string;
+  priceNotes: PriceNoteActions;
   onShowImage: (code: string, name: string, opener: HTMLButtonElement) => void;
 }) {
   const products = data?.products ?? [];
@@ -232,6 +410,11 @@ function SourceDetails({
           <p class="product-panel__time">
             資料時間：{data.updatedAt ? timeLabel(data.updatedAt) : "官方未提供"}
           </p>
+          {source === "treasure" && data.products.length > 0 && (
+            <p class="product-panel__discount-note">
+              折數依使用者規則估算，非官方折扣或結帳價；不以個人原價計算實付金額。
+            </p>
+          )}
           {visibleProducts.length > 0 ? (
             <ul class="product-list">
               {visibleProducts.map((product, index) => {
@@ -240,6 +423,7 @@ function SourceDetails({
                     ? classifyTreasureProduct(product)
                     : null;
                 const imageCode = product.code;
+                const note = imageCode ? priceNotes.byCode.get(imageCode) : undefined;
                 return (
                   <li key={`${product.groupName}-${product.name}-${index}`}>
                     <div class="product-list__details">
@@ -256,7 +440,7 @@ function SourceDetails({
                               <span class="product-list__tag product-list__tag--discount">
                                 {classification.discount === "未知"
                                   ? "折扣未知"
-                                  : classification.discount}
+                                  : `估算${classification.discount}`}
                               </span>
                             </>
                           )}
@@ -266,6 +450,18 @@ function SourceDetails({
                         </span>
                       )}
                       <small>{product.category}</small>
+                      {imageCode ? (
+                        <small>商品代碼 {imageCode}</small>
+                      ) : (
+                        <small>未提供商品代碼，無法紀錄原價。</small>
+                      )}
+                      {note ? (
+                        <p class="product-list__price">
+                          個人紀錄原價／非官方：<strong>{formatOriginalPrice(note.priceCents)}</strong>
+                        </p>
+                      ) : imageCode ? (
+                        <p class="product-list__unrecorded">尚未記錄個人原價。</p>
+                      ) : null}
                     </div>
                     <div class="product-list__side">
                       <span class="product-list__quantity">
@@ -285,6 +481,15 @@ function SourceDetails({
                         <span class="product-list__image-unavailable">未提供圖片代碼</span>
                       )}
                     </div>
+                    {imageCode && (
+                      <PriceNoteControls
+                        key={`${editorScope}-${source}-${index}-${imageCode}`}
+                        id={`${editorScope}-${source}-${index}-${imageCode}`}
+                        code={imageCode}
+                        name={product.name}
+                        priceNotes={priceNotes}
+                      />
+                    )}
                   </li>
                 );
               })}
@@ -337,6 +542,7 @@ function StoreCard({
   states,
   favoriteView,
   treasureFilters,
+  priceNotes,
   onAdd,
   onShowImage,
 }: {
@@ -346,6 +552,7 @@ function StoreCard({
   states: Record<MapSource, LoadState>;
   favoriteView: boolean;
   treasureFilters?: TreasureFilters;
+  priceNotes: PriceNoteActions;
   onAdd: (store: MergedStore) => void;
   onShowImage: (code: string, name: string, opener: HTMLButtonElement) => void;
 }) {
@@ -356,6 +563,8 @@ function StoreCard({
       data={store.sources[source]}
       state={states[source]}
       treasureFilters={source === "treasure" ? treasureFilters : undefined}
+      editorScope={`${favoriteView ? "favorite" : "nearby"}-${store.code}`}
+      priceNotes={priceNotes}
       onShowImage={onShowImage}
     />
   ));
@@ -471,9 +680,18 @@ export function App({
   storage,
 }: AppProps) {
   const [saved] = useState(() => initialFavorites(storage));
+  const [savedPrices] = useState(() => initialPriceNotes(storage));
   const storageRef = useRef<Storage | null>(saved.storage);
+  const priceStorageRef = useRef<Storage | null>(savedPrices.storage);
   const [favorites, setFavorites] = useState<Favorite[]>(saved.favorites);
   const [storageWarning, setStorageWarning] = useState<string | null>(saved.warning);
+  const [priceNotes, setPriceNotes] = useState<PriceNote[]>(savedPrices.notes);
+  const [priceStorageWarning, setPriceStorageWarning] = useState<string | null>(savedPrices.warning);
+  const [priceActionMessage, setPriceActionMessage] = useState<string | null>(null);
+  const priceNotesByCode = useMemo(
+    () => new Map(priceNotes.map((note) => [note.code, note])),
+    [priceNotes],
+  );
   const [center, setCenter] = useState<SearchCenter | null>(null);
   const [postalCode, setPostalCode] = useState<string | null>(null);
   const [states, setStates] = useState<Record<MapSource, LoadState>>(emptyStates);
@@ -702,6 +920,47 @@ export function App({
       );
     }
   }
+
+  function savePriceNotes(next: PriceNote[]): boolean {
+    if (!priceStorageRef.current) {
+      setPriceNotes(next);
+      return false;
+    }
+    try {
+      writePriceNotes(priceStorageRef.current, next);
+      setPriceNotes(next);
+      return true;
+    } catch (error) {
+      if (!(error instanceof PriceNoteStorageError)) throw error;
+      priceStorageRef.current = null;
+      setPriceStorageWarning(error.message);
+      setPriceNotes(next);
+      return false;
+    }
+  }
+
+  function recordPrice(note: PriceNote) {
+    const persisted = savePriceNotes(upsertPriceNote(priceNotes, note));
+    setPriceActionMessage(
+      `「${note.name}」（商品代碼 ${note.code}）的個人原價已${persisted ? "儲存於此裝置" : "更新於目前頁面；重新載入後不會保留這次變更"}。`,
+    );
+  }
+
+  function clearPrice(code: string) {
+    const note = priceNotesByCode.get(code);
+    if (!note) throw new PriceNoteValidationError("此商品沒有可清除的個人原價紀錄。");
+    const persisted = savePriceNotes(removePriceNote(priceNotes, code));
+    setPriceActionMessage(
+      `「${note.name}」（商品代碼 ${code}）的個人原價已${persisted ? "從此裝置清除" : "在目前頁面清除；重新載入後可能仍存在"}。`,
+    );
+  }
+
+  const priceNoteActions: PriceNoteActions = {
+    byCode: priceNotesByCode,
+    storageWarning: priceStorageWarning,
+    save: recordPrice,
+    clear: clearPrice,
+  };
 
   useEffect(() => {
     const matched = new Map(savedStores.map((store) => [store.code, store]));
@@ -996,6 +1255,7 @@ export function App({
           </a>
           <nav aria-label="頁面導覽">
             <a href="#favorites">我的收藏</a>
+            <a href="#price-notes">原價紀錄</a>
             <a href="#nearby">附近店家</a>
             <a href="#about">資料說明</a>
           </nav>
@@ -1287,7 +1547,7 @@ export function App({
                   </div>
                   <p class="favorite-filters__note">
                     只篩選收藏中的挖寶商品，不影響分店、友善食光或附近清單。
-                    折數依使用者提供規則判讀，實際優惠以官方／現場為準。
+                    折數自動估算顯示於挖寶商品，非官方折扣或實際結帳價。
                   </p>
                   <div class="favorite-filters__fields">
                     <div>
@@ -1314,20 +1574,6 @@ export function App({
                         }
                       >
                         {PREFIX_FILTER_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label for="favorite-discount">自訂折數</label>
-                      <select
-                        id="favorite-discount"
-                        value={treasureFilters.discount}
-                        onChange={(event) =>
-                          chooseTreasureFilter("discount", event.currentTarget.value, DISCOUNT_FILTER_OPTIONS)
-                        }
-                      >
-                        {DISCOUNT_FILTER_OPTIONS.map((option) => (
                           <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
                       </select>
@@ -1374,6 +1620,7 @@ export function App({
                         }
                         onAdd={addFavorite}
                         onShowImage={showImage}
+                        priceNotes={priceNoteActions}
                       />
                     ))}
                   </div>
@@ -1452,6 +1699,51 @@ export function App({
                 )}
               </section>
 
+              <section id="price-notes" class="result-section" aria-labelledby="price-notes-title">
+                <div class="result-section__heading">
+                  <div>
+                    <div class="section-label"><span>NT$</span> 只存在本機</div>
+                    <h2 id="price-notes-title" tabIndex={-1}>
+                      個人原價紀錄 <span>{priceNotes.length}</span>
+                    </h2>
+                    <p>
+                      商品原價（折扣前）只由你輸入，以商品代碼跨分店共用；
+                      非官方定價、不送往 API，換裝置不會同步。
+                    </p>
+                  </div>
+                </div>
+                {priceStorageWarning && <p class="inline-alert" role="alert">{priceStorageWarning}</p>}
+                {priceActionMessage && <p class="form-message" role="status">{priceActionMessage}</p>}
+                {priceNotes.length > 0 ? (
+                  <ul class="price-manager">
+                    {priceNotes.map((note) => (
+                      <li key={note.code}>
+                        <div class="price-manager__identity">
+                          <strong>{note.name}</strong>
+                          <small>商品代碼 {note.code}</small>
+                          <span>個人紀錄原價／非官方：{formatOriginalPrice(note.priceCents)}</span>
+                        </div>
+                        <PriceNoteControls
+                          id={`manager-${note.code}`}
+                          code={note.code}
+                          name={note.name}
+                          manager
+                          priceNotes={priceNoteActions}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div class="empty-state">
+                    <h3>尚無個人原價紀錄</h3>
+                    <p>
+                      展開收藏或附近分店的商品，對有商品代碼的品項按「記錄個人原價」；
+                      未提供代碼的品項不會依名稱混記。
+                    </p>
+                  </div>
+                )}
+              </section>
+
               <section id="nearby" class="result-section" aria-labelledby="nearby-title">
                 <div class="result-section__heading">
                   <div>
@@ -1510,6 +1802,7 @@ export function App({
                               favoriteView={false}
                               onAdd={addFavorite}
                               onShowImage={showImage}
+                              priceNotes={priceNoteActions}
                             />
                           ))}
                         </div>
@@ -1557,7 +1850,8 @@ export function App({
             <p>商品名稱、數量與資料時間以官方地圖回傳為準；資料可能延遲、不完整或暫無回應，不能作為即時庫存保證。</p>
           </div>
           <p class="site-footer__privacy">
-            收藏僅存於此裝置的 localStorage。定位須由你主動同意，僅用於查詢全家地圖，不使用會員認證或第三方圖磚。
+            收藏與個人原價紀錄各自僅存於此裝置的 localStorage，原價不送往 API、無登入或跨裝置同步。
+            折數為使用者規則的估算，非官方定價或結帳價。定位須由你主動同意，僅用於查詢全家地圖，不使用第三方圖磚。
           </p>
         </div>
       </footer>
