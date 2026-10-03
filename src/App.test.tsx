@@ -431,6 +431,88 @@ describe("interactive store finder", () => {
   });
 
   describe("personal original price notes", () => {
+    it("shows receipt prices by code in both store lists without pricing other products or creating a local note", async () => {
+      saveFixtureFavorite();
+      const client = sharedCodeClient();
+      act(() => render(<App client={client} geolocation={null} />, root));
+
+      const catalogue = root.querySelector("#receipt-prices");
+      expect(catalogue?.querySelectorAll(".receipt-price-list li")).toHaveLength(8);
+      expect(catalogue?.textContent).toContain("2026-10-02");
+      expect(catalogue?.textContent).toContain("惜—星星脆哈蜜瓜牛奶口味");
+      expect(catalogue?.querySelector(".receipt-price-list li small")?.textContent)
+        .toBe("商品代碼 0065108");
+      expect(root.querySelector<HTMLAnchorElement>("nav a[href='#receipt-prices']")).not.toBeNull();
+      expect(root.querySelector("#price-notes .price-manager")).toBeNull();
+      expect(window.localStorage.getItem(PRICE_NOTES_KEY)).toBeNull();
+
+      setInput("#area", "taipei");
+      submit("#area");
+      await settleQueries();
+      const favorite = favoriteCard("全家台鐵西店");
+      const nearby = nearbyCard("全家另一店");
+      act(() => favorite.querySelector<HTMLElement>(".store-card__details > summary")!.click());
+      act(() => nearby.querySelector<HTMLElement>(".store-card__details > summary")!.click());
+
+      for (const row of [
+        productRow(favorite, "treasure", "惜—食品甲"),
+        productRow(nearby, "treasure", "跨店不同名稱"),
+      ]) {
+        expect(row.querySelector(".product-list__receipt-price")?.textContent)
+          .toContain("收據原價：NT$39");
+        expect(row.querySelector(".product-list__receipt-price")?.textContent)
+          .toContain("該筆五折推算：NT$20");
+        expect(row.querySelector(".product-list__receipt-price")?.textContent)
+          .toContain("使用者提供收據・2026-10-02");
+        expect(row.querySelector(".product-list__unrecorded")?.textContent)
+          .toContain("尚未記錄個人原價");
+        expect(row.querySelector(".product-list__labels")?.textContent).toContain("估算5折");
+      }
+      expect(favorite.querySelector(".product-panel__receipt-note")?.textContent)
+        .toContain("不保證現在或未來");
+      expect(productRow(nearby, "treasure", "惜—食品甲")
+        .querySelector(".product-list__receipt-price")).toBeNull();
+      const noCode = [...favorite.querySelectorAll(".product-panel--treasure .product-list li")]
+        .find((row) => row.textContent?.includes("未提供商品代碼"))!;
+      expect(noCode.querySelector(".product-list__receipt-price")).toBeNull();
+      expect(productRow(favorite, "food", "友善便當")
+        .querySelector(".product-list__receipt-price")).toBeNull();
+      expect(productRow(favorite, "food", "友善便當")
+        .querySelector(".product-list__image-button")).not.toBeNull();
+      expect(root.querySelector("#price-notes .price-manager")).toBeNull();
+      expect(window.localStorage.getItem(PRICE_NOTES_KEY)).toBeNull();
+    });
+
+    it("keeps an existing personal original price editable and removable without changing the receipt price", async () => {
+      saveFixtureFavorite();
+      const savedNote = [{ code: "0065108", name: "我的舊紀錄", priceCents: 4_200 }];
+      window.localStorage.setItem(PRICE_NOTES_KEY, JSON.stringify(savedNote));
+      act(() => render(<App client={sharedCodeClient()} geolocation={null} />, root));
+      await settleQueries();
+
+      const row = productRow(favoriteCard("全家台鐵西店"), "treasure", "惜—食品甲");
+      expect(row.querySelector(".product-list__receipt-price")?.textContent)
+        .toContain("該筆五折推算：NT$20");
+      expect(row.querySelector(".product-list__price")?.textContent)
+        .toContain("個人紀錄原價／非官方：NT$42");
+      expect(window.localStorage.getItem(PRICE_NOTES_KEY)).toBe(JSON.stringify(savedNote));
+      expect(root.querySelectorAll("#price-notes .price-manager li")).toHaveLength(1);
+
+      const manager = root.querySelector<HTMLDetailsElement>("#price-notes .price-note-controls")!;
+      act(() => manager.querySelector("summary")!.click());
+      act(() => manager.querySelector<HTMLButtonElement>(
+        ".price-note-controls__actions button:last-child",
+      )!.click());
+      act(() => button(/^確認清除原價$/).click());
+      expect(window.localStorage.getItem(PRICE_NOTES_KEY)).toBe("[]");
+      expect(row.querySelector(".product-list__receipt-price")?.textContent)
+        .toContain("收據原價：NT$39");
+      expect(row.querySelector(".product-list__unrecorded")?.textContent)
+        .toContain("尚未記錄個人原價");
+      expect(root.querySelector("#price-notes .price-manager")).toBeNull();
+      expect(root.querySelectorAll("#receipt-prices .receipt-price-list li")).toHaveLength(8);
+    });
+
     it("shares only identical product codes across favorite and nearby stores, persists and edits", async () => {
       saveFixtureFavorite();
       const client = sharedCodeClient();

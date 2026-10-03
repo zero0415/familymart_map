@@ -980,6 +980,44 @@ ul {
   background: white;
 }
 
+.receipt-price-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.receipt-price-list li {
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid #eedfca;
+  border-radius: 12px;
+  background: #fffaf2;
+  overflow-wrap: anywhere;
+}
+
+.receipt-price-list li > strong {
+  display: block;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.receipt-price-list small {
+  display: block;
+  margin: 3px 0 8px;
+  color: #63766b;
+  font-size: 11px;
+}
+
+.receipt-price-list p {
+  color: #70461e;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.receipt-price-list p + p {
+  margin-top: 3px;
+}
+
 .price-manager li {
   display: flex;
   flex-wrap: wrap;
@@ -1332,6 +1370,13 @@ button.favorite-button:hover {
   line-height: 1.6;
 }
 
+.product-panel__receipt-note {
+  margin-top: 7px;
+  color: #70461e;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .product-panel .muted {
   margin-top: 8px;
   font-size: 11px;
@@ -1413,6 +1458,24 @@ button.favorite-button:hover {
 
 .product-list__unrecorded {
   color: #6b7e70;
+}
+
+.product-list__receipt-price {
+  margin-top: 8px;
+  padding-left: 9px;
+  border-left: 3px solid #bb8745;
+  color: #70461e;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.product-list__receipt-price p + p {
+  margin-top: 2px;
+}
+
+.product-list__receipt-price small {
+  margin-top: 3px;
 }
 
 .product-list__quantity {
@@ -1750,11 +1813,15 @@ button.favorite-button:hover {
   .site-header nav {
     width: 100%;
     justify-content: space-between;
-    gap: 9px;
+    flex-wrap: wrap;
+    gap: 0 9px;
     font-size: 12px;
   }
 
   .site-header nav a {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
     padding-block: 13px;
   }
 
@@ -1795,6 +1862,10 @@ button.favorite-button:hover {
   }
 
   .store-card__panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .receipt-price-list {
     grid-template-columns: minmax(0, 1fr);
   }
 

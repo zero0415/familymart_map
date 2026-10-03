@@ -39,6 +39,11 @@ import {
   type PriceNote,
 } from "./price-notes";
 import {
+  findReceiptPrice,
+  RECEIPT_PRICE_REFERENCES,
+  RECEIPT_REFERENCE_DATE,
+} from "./receipt-prices";
+import {
   distanceMeters,
   formatDistance,
   getNearby,
@@ -415,6 +420,12 @@ function SourceDetails({
               折數依使用者規則估算，非官方折扣或結帳價；不以個人原價計算實付金額。
             </p>
           )}
+          {visibleProducts.some((product) => findReceiptPrice(source, product.code)) && (
+            <p class="product-panel__receipt-note">
+              收據參考價來自使用者提供的 {RECEIPT_REFERENCE_DATE} 收據；該筆五折推算逐件以
+              .5 元進位，不是官方定價，也不保證現在或未來的售價／優惠。
+            </p>
+          )}
           {visibleProducts.length > 0 ? (
             <ul class="product-list">
               {visibleProducts.map((product, index) => {
@@ -424,6 +435,7 @@ function SourceDetails({
                     : null;
                 const imageCode = product.code;
                 const note = imageCode ? priceNotes.byCode.get(imageCode) : undefined;
+                const reference = findReceiptPrice(source, imageCode);
                 return (
                   <li key={`${product.groupName}-${product.name}-${index}`}>
                     <div class="product-list__details">
@@ -454,6 +466,13 @@ function SourceDetails({
                         <small>商品代碼 {imageCode}</small>
                       ) : (
                         <small>未提供商品代碼，無法紀錄原價。</small>
+                      )}
+                      {reference && (
+                        <div class="product-list__receipt-price">
+                          <p>收據原價：<strong>{formatOriginalPrice(reference.originalCents)}</strong></p>
+                          <p>該筆五折推算：<strong>{formatOriginalPrice(reference.halfPriceCents)}</strong></p>
+                          <small>{reference.source}・{reference.receiptDate}</small>
+                        </div>
                       )}
                       {note ? (
                         <p class="product-list__price">
@@ -1255,6 +1274,7 @@ export function App({
           </a>
           <nav aria-label="頁面導覽">
             <a href="#favorites">我的收藏</a>
+            <a href="#receipt-prices">收據參考</a>
             <a href="#price-notes">原價紀錄</a>
             <a href="#nearby">附近店家</a>
             <a href="#about">資料說明</a>
@@ -1699,6 +1719,32 @@ export function App({
                 )}
               </section>
 
+              <section id="receipt-prices" class="result-section" aria-labelledby="receipt-prices-title">
+                <div class="result-section__heading">
+                  <div>
+                    <div class="section-label"><span>NT$</span> 公開內建・所有訪客可見</div>
+                    <h2 id="receipt-prices-title">收據參考價 <span>{Object.keys(RECEIPT_PRICE_REFERENCES).length}</span></h2>
+                    <p>
+                      使用者提供的 {RECEIPT_REFERENCE_DATE} 收據：原價是當時標示單價，折後價是該筆
+                      逐件五折並將 .5 元進位的推算；非官方定價，不保證現在或未來售價／優惠。
+                      僅按官方商品代碼對照挖寶明細；個人原價紀錄不受影響，仍只存在本機。
+                    </p>
+                  </div>
+                </div>
+                <ul class="receipt-price-list">
+                  {Object.entries(RECEIPT_PRICE_REFERENCES)
+                    .sort(([first], [second]) => first.localeCompare(second))
+                    .map(([code, reference]) => (
+                      <li key={code}>
+                        <strong>{reference.name}</strong>
+                        <small>商品代碼 {code}</small>
+                        <p>收據原價：<strong>{formatOriginalPrice(reference.originalCents)}</strong></p>
+                        <p>該筆五折推算：<strong>{formatOriginalPrice(reference.halfPriceCents)}</strong></p>
+                      </li>
+                    ))}
+                </ul>
+              </section>
+
               <section id="price-notes" class="result-section" aria-labelledby="price-notes-title">
                 <div class="result-section__heading">
                   <div>
@@ -1708,7 +1754,7 @@ export function App({
                     </h2>
                     <p>
                       商品原價（折扣前）只由你輸入，以商品代碼跨分店共用；
-                      非官方定價、不送往 API，換裝置不會同步。
+                      與上方公開的收據參考價分開，非官方定價、不送往 API，換裝置不會同步。
                     </p>
                   </div>
                 </div>
@@ -1850,8 +1896,9 @@ export function App({
             <p>商品名稱、數量與資料時間以官方地圖回傳為準；資料可能延遲、不完整或暫無回應，不能作為即時庫存保證。</p>
           </div>
           <p class="site-footer__privacy">
-            收藏與個人原價紀錄各自僅存於此裝置的 localStorage，原價不送往 API、無登入或跨裝置同步。
-            折數為使用者規則的估算，非官方定價或結帳價。定位須由你主動同意，僅用於查詢全家地圖，不使用第三方圖磚。
+            內建收據參考價跨裝置可見，不代表當前售價；收藏與個人原價紀錄各自僅存於此裝置的 localStorage，
+            個人原價不送往 API、無登入或跨裝置同步。折數為使用者規則的估算，非官方定價或結帳價。
+            定位須由你主動同意，僅用於查詢全家地圖，不使用第三方圖磚。
           </p>
         </div>
       </footer>
