@@ -358,6 +358,13 @@ describe("navigable store-finder pages and catalog-backed nearby stores", () => 
     await act(async () => { await Promise.resolve(); });
     go("#favorites");
     expect(root.querySelector("#favorites")?.textContent).toContain("原本點心");
+    const favorite = root.querySelector<HTMLElement>("#favorites .store-card")!;
+    const storeDetails = favorite.querySelector<HTMLDetailsElement>(".store-card__details")!;
+    act(() => storeDetails.querySelector("summary")!.click());
+    const treasure = favorite.querySelector<HTMLDetailsElement>(".product-panel--treasure")!;
+    expect(treasure.open).toBe(false);
+    act(() => treasure.querySelector("summary")!.click());
+    expect(treasure.open).toBe(true);
     go("#nearby");
     act(() => root.querySelector<HTMLButtonElement>("#nearby .refresh-button")!.click());
     await settle();
@@ -367,6 +374,10 @@ describe("navigable store-finder pages and catalog-backed nearby stores", () => 
     }));
     expect(root.querySelector("#favorites")?.textContent).toContain("刷新後點心");
     expect(root.querySelector("#favorites")?.textContent).not.toContain("原本點心");
+    expect(favorite.querySelector(".product-panel--treasure")).toBe(treasure);
+    expect(storeDetails.open).toBe(true);
+    expect(treasure.open).toBe(true);
+    expect(treasure.querySelector(".product-list")?.textContent).toContain("刷新後點心");
   });
 
   it("does not invent a 3 km list when the snapshot fails, and offers retry alongside location fallbacks", async () => {

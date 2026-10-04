@@ -313,7 +313,7 @@ function PriceNoteControls({
       {manager && <p>{name}・商品代碼 {code}</p>}
       <form onSubmit={savePrice} noValidate>
         <label for={inputId}>
-          {manager ? "商品原價（折扣前，NT$）" : "使用者自行輸入原價（折扣前，非官方，NT$）"}
+          {manager ? "商品原價（折扣前，NT$）" : "使用者自行記錄價格（折扣前原價，非官方，NT$）"}
         </label>
         <input
           id={inputId}
@@ -330,7 +330,7 @@ function PriceNoteControls({
           }}
         />
         <p id={hintId} class="field-hint">
-          僅記自己確認的原價，非官方定價。例：39 或 39.50；限 0.01～99,999.99。
+          僅用來記錄自己確認的原價，非官方定價。例：39 或 39.50；限 0.01～99,999.99。
         </p>
         {error && <p id={errorId} class="inline-alert" role="alert">{error}</p>}
         <div class="price-note-controls__actions">
@@ -376,30 +376,31 @@ function PriceNoteControls({
   if (!manager) {
     return (
       <div class="price-note-controls price-note-controls--inline">
-        {note ? (
-          <>
+        <div class="price-note-controls__prompt">
+          {note ? (
             <p class="product-list__price">
               使用者自行輸入原價／非官方：<strong>{formatOriginalPrice(note.priceCents)}</strong>
             </p>
-          </>
-        ) : (
-          <p class="product-list__unrecorded">尚未記錄個人原價。</p>
-        )}
-        {editing ? content : (
-          <button
-            type="button"
-            class="price-note-controls__edit"
-            ref={editRef}
-            onClick={() => {
-              setPriceText(note ? String(note.priceCents / 100) : "");
-              setError(null);
-              focusAfterAction.current = "input";
-              setEditing(true);
-            }}
-          >
-            {note ? "修改個人原價" : "記錄個人原價"}
-          </button>
-        )}
+          ) : (
+            <p class="product-list__unrecorded">尚未記錄個人原價。</p>
+          )}
+          {!editing && (
+            <button
+              type="button"
+              class="price-note-controls__edit"
+              ref={editRef}
+              onClick={() => {
+                setPriceText(note ? String(note.priceCents / 100) : "");
+                setError(null);
+                focusAfterAction.current = "input";
+                setEditing(true);
+              }}
+            >
+              {note ? "修改個人原價" : "記錄個人原價"}
+            </button>
+          )}
+        </div>
+        {editing && content}
         {priceNotes.storageWarning && (
           <p class="inline-alert" role="alert">{priceNotes.storageWarning}</p>
         )}
@@ -481,6 +482,20 @@ function SourceStatus({
   );
 }
 
+function productStatusLabel(
+  state: LoadState,
+  data: SourceProducts | undefined,
+  matched: number | null = null,
+): string {
+  if (state.status === "loading") return "查詢中";
+  if (state.status === "error") return "讀取失敗";
+  if (state.status === "idle") return "未查詢";
+  if (!data) return "未回傳此店";
+  return matched === null
+    ? `${data.products.length} 項明細`
+    : `${matched} / ${data.products.length} 項符合`;
+}
+
 function SourceDetails({
   source,
   data,
@@ -509,130 +524,128 @@ function SourceDetails({
       : false;
 
   return (
-    <section class={`product-panel product-panel--${source}`} aria-label={`${MAP_SOURCES[source].name}商品`}>
-      <div class="product-panel__heading">
-        <h4>{MAP_SOURCES[source].name}</h4>
-        {data && (
-          <span>
-            {filtered && products.length > 0
-              ? `${visibleProducts.length} / ${products.length} 項符合`
-              : `${products.length} 項商品明細`}
-          </span>
+    <details class={`product-panel product-panel--${source}`}>
+      <summary class="product-panel__summary">
+        <strong class="product-panel__title">{MAP_SOURCES[source].name}</strong>
+        <span class={`product-panel__status${state.status === "error" ? " product-panel__status--error" : ""}`}>
+          {productStatusLabel(state, data, filtered && products.length > 0 ? visibleProducts.length : null)}
+          {state.status === "error" && `：${state.message}`}
+          {state.status === "ready" && !data && "（不代表缺貨）"}
+          {state.status === "ready" && data?.products.length === 0 && "（尚無可列明細）"}
+        </span>
+      </summary>
+      <div class="product-panel__content">
+        {state.status === "loading" ? (
+          <p class="muted">正在查詢這張地圖…</p>
+        ) : state.status === "error" ? (
+          <p class="muted">{state.message} 此店的商品資料暫時無法確認。</p>
+        ) : state.status === "idle" ? (
+          <p class="muted">尚未查詢這張地圖。</p>
+        ) : !data ? (
+          <p class="muted">這張地圖目前未回傳此店商品資料，不代表缺貨。</p>
+        ) : (
+          <>
+            <p class="product-panel__time">
+              資料時間：{data.updatedAt ? timeLabel(data.updatedAt) : "官方未提供"}
+            </p>
+            {source === "treasure" && data.products.length > 0 && (
+              <p class="product-panel__discount-note">
+                折數依使用者規則估算，非官方折扣或結帳價；不以個人原價計算實付金額。
+              </p>
+            )}
+            {visibleProducts.some((product) => findReceiptPrice(source, product.code)) && (
+              <p class="product-panel__receipt-note">推算折扣時逐件以 0.5 元進位。</p>
+            )}
+            {visibleProducts.length > 0 ? (
+              <ul class="product-list">
+                {visibleProducts.map((product, index) => {
+                  const classification =
+                    source === "treasure"
+                      ? classifyTreasureProduct(product)
+                      : null;
+                  const imageCode = product.code;
+                  const reference = findReceiptPrice(source, imageCode);
+                  return (
+                    <li key={`${product.groupName}-${product.name}-${index}`}>
+                      <div class="product-list__details">
+                        <span class="product-list__name">{product.name}</span>
+                        {classification && (
+                          <span class="product-list__labels">
+                            {classification.category === "unknown" ? (
+                              <span class="product-list__tag">類別／折扣未知</span>
+                            ) : (
+                              <>
+                                <span class="product-list__tag">
+                                  {TREASURE_CATEGORY_LABELS[classification.category]}
+                                </span>
+                                <span class="product-list__tag product-list__tag--discount">
+                                  {classification.discount === "未知"
+                                    ? "折扣未知"
+                                    : `估算${classification.discount}`}
+                                </span>
+                              </>
+                            )}
+                            <span class="product-list__tag">
+                              {classification.saving ? "惜-開頭" : "非惜-開頭"}
+                            </span>
+                          </span>
+                        )}
+                        <small>{product.category}</small>
+                        {imageCode ? (
+                          <small>商品代碼 {imageCode}</small>
+                        ) : (
+                          <small>未提供商品代碼，無法紀錄原價。</small>
+                        )}
+                        {imageCode && (
+                          <div class={`product-list__prices${reference ? " product-list__prices--receipt" : ""}`}>
+                            {reference && (
+                              <div class="product-list__receipt-price">
+                                <p>收據原價：<strong>{formatOriginalPrice(reference.originalCents)}</strong></p>
+                                <p>該筆五折推算：<strong>{formatOriginalPrice(reference.halfPriceCents)}</strong></p>
+                                <small>{reference.source}資料來源：{reference.receiptDate}</small>
+                              </div>
+                            )}
+                            <PriceNoteControls
+                              key={`${editorScope}-${source}-${index}-${imageCode}`}
+                              id={`${editorScope}-${source}-${index}-${imageCode}`}
+                              code={imageCode}
+                              name={product.name}
+                              priceNotes={priceNotes}
+                            />
+                          </div>
+                        )}
+                      </div>
+                      <div class="product-list__side">
+                        <span class="product-list__quantity">
+                          {product.quantity === undefined ? "數量未提供" : `${product.quantity} 件`}
+                        </span>
+                        {imageCode ? (
+                          <button
+                            type="button"
+                            class="product-list__image-button"
+                            aria-label={`查看圖片：${product.name}`}
+                            aria-haspopup="dialog"
+                            onClick={(event) => onShowImage(imageCode, product.name, event.currentTarget)}
+                          >
+                            查看圖片
+                          </button>
+                        ) : (
+                          <span class="product-list__image-unavailable">未提供圖片代碼</span>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : filtered && products.length > 0 ? (
+              <p class="muted">目前沒有符合篩選的挖寶商品；請調整或清除篩選。</p>
+            ) : (
+              <p class="muted">地圖回傳此店，但未提供可列出的商品明細；請至官方地圖確認。</p>
+            )}
+          </>
         )}
       </div>
-      {state.status === "loading" ? (
-        <p class="muted">正在查詢這張地圖…</p>
-      ) : state.status === "error" ? (
-        <p class="muted">{state.message} 此店的商品資料暫時無法確認。</p>
-      ) : state.status === "idle" ? (
-        <p class="muted">尚未查詢這張地圖。</p>
-      ) : !data ? (
-        <p class="muted">這張地圖目前未回傳此店商品資料，不代表缺貨。</p>
-      ) : (
-        <>
-          <p class="product-panel__time">
-            資料時間：{data.updatedAt ? timeLabel(data.updatedAt) : "官方未提供"}
-          </p>
-          {source === "treasure" && data.products.length > 0 && (
-            <p class="product-panel__discount-note">
-              折數依使用者規則估算，非官方折扣或結帳價；不以個人原價計算實付金額。
-            </p>
-          )}
-          {visibleProducts.some((product) => findReceiptPrice(source, product.code)) && (
-            <p class="product-panel__receipt-note">
-              收據參考價來自使用者提供的 {RECEIPT_REFERENCE_DATE} 收據；該筆五折推算逐件以
-              .5 元進位，不是官方定價，也不保證現在或未來的售價／優惠。
-            </p>
-          )}
-          {visibleProducts.length > 0 ? (
-            <ul class="product-list">
-              {visibleProducts.map((product, index) => {
-                const classification =
-                  source === "treasure"
-                    ? classifyTreasureProduct(product)
-                    : null;
-                const imageCode = product.code;
-                const reference = findReceiptPrice(source, imageCode);
-                return (
-                  <li key={`${product.groupName}-${product.name}-${index}`}>
-                    <div class="product-list__details">
-                      <span class="product-list__name">{product.name}</span>
-                      {classification && (
-                        <span class="product-list__labels">
-                          {classification.category === "unknown" ? (
-                            <span class="product-list__tag">類別／折扣未知</span>
-                          ) : (
-                            <>
-                              <span class="product-list__tag">
-                                {TREASURE_CATEGORY_LABELS[classification.category]}
-                              </span>
-                              <span class="product-list__tag product-list__tag--discount">
-                                {classification.discount === "未知"
-                                  ? "折扣未知"
-                                  : `估算${classification.discount}`}
-                              </span>
-                            </>
-                          )}
-                          <span class="product-list__tag">
-                            {classification.saving ? "惜-開頭" : "非惜-開頭"}
-                          </span>
-                        </span>
-                      )}
-                      <small>{product.category}</small>
-                      {imageCode ? (
-                        <small>商品代碼 {imageCode}</small>
-                      ) : (
-                        <small>未提供商品代碼，無法紀錄原價。</small>
-                      )}
-                      {imageCode && (
-                        <div class={`product-list__prices${reference ? " product-list__prices--receipt" : ""}`}>
-                          {reference && (
-                            <div class="product-list__receipt-price">
-                              <p>收據原價：<strong>{formatOriginalPrice(reference.originalCents)}</strong></p>
-                              <p>該筆五折推算：<strong>{formatOriginalPrice(reference.halfPriceCents)}</strong></p>
-                              <small>{reference.source}資料來源：{reference.receiptDate}</small>
-                            </div>
-                          )}
-                          <PriceNoteControls
-                            key={`${editorScope}-${source}-${index}-${imageCode}`}
-                            id={`${editorScope}-${source}-${index}-${imageCode}`}
-                            code={imageCode}
-                            name={product.name}
-                            priceNotes={priceNotes}
-                          />
-                        </div>
-                      )}
-                    </div>
-                    <div class="product-list__side">
-                      <span class="product-list__quantity">
-                        {product.quantity === undefined ? "數量未提供" : `${product.quantity} 件`}
-                      </span>
-                      {imageCode ? (
-                        <button
-                          type="button"
-                          class="product-list__image-button"
-                          aria-label={`查看圖片：${product.name}`}
-                          aria-haspopup="dialog"
-                          onClick={(event) => onShowImage(imageCode, product.name, event.currentTarget)}
-                        >
-                          查看圖片
-                        </button>
-                      ) : (
-                        <span class="product-list__image-unavailable">未提供圖片代碼</span>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          ) : filtered && products.length > 0 ? (
-            <p class="muted">目前沒有符合篩選的挖寶商品；請調整或清除篩選。</p>
-          ) : (
-            <p class="muted">地圖回傳此店，但未提供可列出的商品明細；請至官方地圖確認。</p>
-          )}
-        </>
-      )}
-    </section>
+    </details>
   );
 }
 
@@ -647,21 +660,9 @@ function SourceBadge({ source, data, state, treasureFilters }: {
     hasActiveTreasureFilters(treasureFilters)
       ? filterTreasureProducts(data.products, treasureFilters).length
       : null;
-  const text =
-    state.status === "loading"
-      ? "查詢中"
-      : state.status === "error"
-        ? "讀取失敗"
-        : state.status === "idle"
-          ? "未查詢"
-          : data
-            ? matched === null
-              ? `${data.products.length} 項明細`
-              : `${matched} / ${data.products.length} 項符合`
-            : "未回傳此店";
   return (
     <span class={`source-badge source-badge--${source}`}>
-      {MAP_SOURCES[source].name}・{text}
+      {MAP_SOURCES[source].name}・{productStatusLabel(state, data, matched)}
     </span>
   );
 }
@@ -740,8 +741,8 @@ function StoreCard({
       <details class="store-card__details">
         <summary>
           {favoriteView
-            ? "展開或收合兩張地圖的商品與資料時間"
-            : "查看兩張地圖的商品與資料時間"}
+            ? "展開兩張地圖（商品與資料時間可各自收合）"
+            : "查看兩張地圖（商品與資料時間可各自收合）"}
         </summary>
         <div class="store-card__panels">{panels}</div>
       </details>

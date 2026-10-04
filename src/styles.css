@@ -1277,8 +1277,17 @@ ul {
   width: min(100%, 13ch);
 }
 
-.price-note-controls__edit {
-  margin-top: 8px;
+.price-note-controls__prompt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.price-note-controls__prompt > p {
+  min-width: 0;
+  margin-top: 0;
 }
 
 .price-note-controls--inline .price-note-controls__edit {
@@ -1286,12 +1295,17 @@ ul {
   max-width: 100%;
   min-height: 44px;
   align-items: center;
-  margin-top: 5px;
-  padding: 6px 9px;
-  border-color: #cadbd0;
-  background: transparent;
-  color: #3d6b5c;
+  padding: 4px 7px;
+  border-color: #b8d1c0;
+  background: #f5faf6;
+  color: #265e50;
+  font-size: 11px;
   font-weight: 700;
+  white-space: nowrap;
+}
+
+.price-note-controls--inline .price-note-controls__edit:hover {
+  background: #e9f4ec;
 }
 
 .price-note-controls--inline .price-note-controls__actions button {
@@ -1502,14 +1516,13 @@ button.favorite-button:hover {
 
 .store-card__panels {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   margin-top: 16px;
 }
 
 .product-panel {
   min-width: 0;
-  padding: 13px 12px;
   border-radius: 11px;
   background: #f3f9f5;
 }
@@ -1518,28 +1531,46 @@ button.favorite-button:hover {
   background: #fff8ee;
 }
 
-.product-panel__heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 3px 8px;
+.product-panel__summary {
+  min-height: 44px;
+  padding: 13px 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  border-radius: 11px;
 }
 
-.product-panel h4 {
+.product-panel__summary:focus-visible {
+  outline-offset: -3px;
+}
+
+.product-panel__content {
+  padding: 0 12px 13px;
+}
+
+.product-panel__title {
   color: #176752;
   font-size: 13px;
 }
 
-.product-panel--treasure h4 {
+.product-panel--treasure .product-panel__title {
   color: #92591f;
 }
 
-.product-panel__heading span,
+.product-panel__status,
 .product-panel__time {
   color: #60776b;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.55;
+}
+
+.product-panel__status {
+  margin-left: 8px;
+  overflow-wrap: anywhere;
+}
+
+.product-panel__status--error {
+  color: #a12824;
+  font-weight: 700;
 }
 
 .product-panel__time {
@@ -2203,10 +2234,6 @@ button.favorite-button:hover {
 
   .results {
     gap: 34px;
-  }
-
-  .store-card__panels {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .receipt-price-list {

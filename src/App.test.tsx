@@ -212,6 +212,12 @@ function expandNearby(name: string): HTMLElement {
   return card;
 }
 
+function sourcePanel(card: HTMLElement, source: "food" | "treasure"): HTMLDetailsElement {
+  const panel = card.querySelector<HTMLDetailsElement>(`.store-card__panels > .product-panel--${source}`);
+  if (!panel) throw new Error(`Source panel not found: ${source}`);
+  return panel;
+}
+
 function productRow(card: HTMLElement, source: "food" | "treasure", name: string): HTMLElement {
   const row = [...card.querySelectorAll<HTMLElement>(`.product-panel--${source} .product-list li`)]
     .find((element) => element.querySelector(".product-list__name")?.textContent === name);
@@ -572,6 +578,183 @@ describe("interactive store finder", () => {
     });
   });
 
+  describe("independent product map disclosures", () => {
+    it("keeps each favorite map closed until individually opened, without closing the store or the other map", async () => {
+      saveFixtureFavorite();
+      const client = productFixtureClient();
+      act(() => render(<App client={client} geolocation={null} />, root));
+      go("#favorites");
+      await settleQueries();
+
+      const card = favoriteCard("全家台鐵西店");
+      const storeDetails = card.querySelector<HTMLDetailsElement>(".store-card__details")!;
+      expect(storeDetails.open).toBe(false);
+      act(() => storeDetails.querySelector("summary")!.click());
+      const food = sourcePanel(card, "food");
+      const treasure = sourcePanel(card, "treasure");
+      expect([...card.querySelector(".store-card__panels")!.children])
+        .toEqual([food, treasure]);
+      expect(food.open).toBe(false);
+      expect(treasure.open).toBe(false);
+      expect(food.querySelector("summary")?.textContent).toContain("友善食光");
+      expect(food.querySelector("summary")?.textContent).toContain("2 項明細");
+      expect(treasure.querySelector("summary")?.textContent).toContain("挖寶專區");
+      expect(treasure.querySelector("summary")?.textContent).toContain("7 項明細");
+      expect(food.querySelector("summary")?.textContent).not.toContain("資料時間");
+      expect(treasure.querySelector("summary")?.textContent).not.toContain("惜—食品甲");
+
+      const foodSummary = food.querySelector("summary")!;
+      act(() => foodSummary.focus());
+      expect(document.activeElement).toBe(foodSummary);
+      act(() => foodSummary.click());
+      expect(food.open).toBe(true);
+      expect(treasure.open).toBe(false);
+      expect(food.querySelector(".product-panel__time")?.textContent).toContain("資料時間");
+      expect(food.querySelector(".product-list")?.textContent).toContain("友善便當");
+      expect(food.querySelector(".product-list")?.textContent).not.toContain("惜—食品甲");
+
+      act(() => treasure.querySelector("summary")!.click());
+      expect(food.open).toBe(true);
+      expect(treasure.open).toBe(true);
+      expect(treasure.querySelector(".product-panel__time")?.textContent).toContain("資料時間");
+      expect(treasure.querySelector(".product-list")?.textContent).toContain("惜—食品甲");
+      act(() => foodSummary.click());
+      expect(food.open).toBe(false);
+      expect(treasure.open).toBe(true);
+      expect(storeDetails.open).toBe(true);
+      act(() => treasure.querySelector("summary")!.click());
+      expect(treasure.open).toBe(false);
+      expect(storeDetails.open).toBe(true);
+      expect(client.load).toHaveBeenCalledTimes(2);
+    });
+
+    it("preserves favorite map expansion through data loading, treasure filters, notes and tab changes", async () => {
+      saveFixtureFavorite();
+      act(() => render(<App client={productFixtureClient()} geolocation={null} />, root));
+      go("#favorites");
+      const card = favoriteCard("全家台鐵西店");
+      act(() => card.querySelector<HTMLElement>(".store-card__details > summary")!.click());
+      const food = sourcePanel(card, "food");
+      const treasure = sourcePanel(card, "treasure");
+      expect(food.querySelector("summary")?.textContent).toContain("查詢中");
+      expect(treasure.querySelector("summary")?.textContent).toContain("查詢中");
+      act(() => food.querySelector("summary")!.click());
+      act(() => treasure.querySelector("summary")!.click());
+      await settleQueries();
+      expect(sourcePanel(card, "food")).toBe(food);
+      expect(sourcePanel(card, "treasure")).toBe(treasure);
+      expect(food.open).toBe(true);
+      expect(treasure.open).toBe(true);
+      expect(treasure.querySelector("summary")?.textContent).toContain("7 項明細");
+
+      setInput("#favorite-category", "supplies");
+      setInput("#favorite-prefix", "saving");
+      expect(treasure.querySelector("summary")?.textContent).toContain("1 / 7 項符合");
+      expect(food.querySelector("summary")?.textContent).toContain("2 項明細");
+      const row = productRow(card, "treasure", "惜-清潔用品");
+      act(() => row.querySelector<HTMLButtonElement>(".price-note-controls__edit")!.click());
+      const inputId = "#price-input-favorite-018558-treasure-0-0459602";
+      setInput(inputId, "29.50");
+      submit(inputId);
+      expect(row.querySelector(".product-list__price")?.textContent).toContain("NT$29.50");
+      expect(sourcePanel(card, "treasure")).toBe(treasure);
+      expect(food.open).toBe(true);
+      expect(treasure.open).toBe(true);
+
+      act(() => food.querySelector("summary")!.click());
+      go("#nearby");
+      go("#favorites");
+      expect(food.open).toBe(false);
+      expect(treasure.open).toBe(true);
+      expect(card.querySelector<HTMLDetailsElement>(".store-card__details")?.open).toBe(true);
+    });
+
+    it("does not mount nearby map panels until the store row opens, then toggles each independently", async () => {
+      const client = productFixtureClient();
+      act(() => render(<App client={client} geolocation={null} />, root));
+      go("#nearby");
+      setInput("#area", "taipei");
+      submit("#area");
+      await settleQueries();
+      const card = nearbyCard("全家台鐵西店");
+      const storeDetails = card.querySelector<HTMLDetailsElement>(".nearby-row__details")!;
+      expect(storeDetails.open).toBe(false);
+      expect(card.querySelector(".product-panel")).toBeNull();
+      expandNearby("全家台鐵西店");
+      const food = sourcePanel(card, "food");
+      const treasure = sourcePanel(card, "treasure");
+      expect([...card.querySelector(".store-card__panels")!.children])
+        .toEqual([food, treasure]);
+      expect(food.open).toBe(false);
+      expect(treasure.open).toBe(false);
+      expect(food.querySelector("summary")?.textContent).toContain("2 項明細");
+      expect(treasure.querySelector("summary")?.textContent).toContain("7 項明細");
+
+      act(() => treasure.querySelector("summary")!.click());
+      expect(treasure.open).toBe(true);
+      expect(food.open).toBe(false);
+      expect(treasure.querySelector(".product-list")?.textContent).toContain("惜—食品甲");
+      expect(treasure.querySelector(".product-list")?.textContent).not.toContain("友善便當");
+      act(() => food.querySelector("summary")!.click());
+      act(() => treasure.querySelector("summary")!.click());
+      expect(food.open).toBe(true);
+      expect(treasure.open).toBe(false);
+      expect(food.querySelector(".product-panel__time")?.textContent).toContain("資料時間");
+      expect(storeDetails.open).toBe(true);
+      expect(client.load).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps missing-data and error explanations visible in closed summaries", async () => {
+      saveFixtureFavorite();
+      const client: MapDataClient = {
+        load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => {
+          if (source === "treasure") throw new MapApiError("service", "挖寶讀取失敗");
+          return { stores: [], fetchedAt: Date.now(), fromCache: false };
+        }),
+      };
+      act(() => render(<App client={client} geolocation={null} />, root));
+      await settleQueries();
+      const card = favoriteCard("全家台鐵西店");
+      act(() => card.querySelector<HTMLElement>(".store-card__details > summary")!.click());
+      const food = sourcePanel(card, "food");
+      const treasure = sourcePanel(card, "treasure");
+      expect(food.open).toBe(false);
+      expect(treasure.open).toBe(false);
+      expect(food.querySelector("summary")?.textContent).toContain("未回傳此店（不代表缺貨）");
+      expect(treasure.querySelector("summary")?.textContent)
+        .toContain("讀取失敗：挖寶讀取失敗");
+      act(() => treasure.querySelector("summary")!.click());
+      expect(treasure.querySelector(".muted")?.textContent)
+        .toContain("此店的商品資料暫時無法確認");
+      expect(food.open).toBe(false);
+    });
+
+    it("distinguishes a returned store with zero products from one the map did not return", async () => {
+      saveFixtureFavorite();
+      const client: MapDataClient = {
+        load: vi.fn(async ({ source }: MapQuery): Promise<MapResult> => ({
+          stores: source === "treasure" ? [makeStore({ info: [] })] : [],
+          fetchedAt: Date.now(),
+          fromCache: false,
+        })),
+      };
+      act(() => render(<App client={client} geolocation={null} />, root));
+      await settleQueries();
+      const card = favoriteCard("全家台鐵西店");
+      act(() => card.querySelector<HTMLElement>(".store-card__details > summary")!.click());
+      const food = sourcePanel(card, "food");
+      const treasure = sourcePanel(card, "treasure");
+      expect(food.querySelector("summary")?.textContent).toContain("未回傳此店（不代表缺貨）");
+      expect(treasure.querySelector("summary")?.textContent)
+        .toContain("0 項明細（尚無可列明細）");
+      expect(food.open).toBe(false);
+      expect(treasure.open).toBe(false);
+      act(() => treasure.querySelector("summary")!.click());
+      expect(treasure.querySelector(".muted")?.textContent)
+        .toContain("地圖回傳此店，但未提供可列出的商品明細");
+    });
+  });
+
   describe("favorite treasure filters", () => {
     it("filters only treasure products in saved stores, without hiding stores, food or nearby products", async () => {
       saveFixtureFavorite();
@@ -853,6 +1036,8 @@ describe("interactive store finder", () => {
       const favorite = favoriteCard("全家台鐵西店");
       const nearby = expandNearby("全家另一店");
       act(() => favorite.querySelector<HTMLElement>(".store-card__details > summary")!.click());
+      act(() => sourcePanel(favorite, "treasure").querySelector("summary")!.click());
+      act(() => sourcePanel(nearby, "treasure").querySelector("summary")!.click());
 
       for (const row of [
         productRow(favorite, "treasure", "惜—食品甲"),
@@ -871,14 +1056,23 @@ describe("interactive store finder", () => {
         expect(prices.querySelector("input")).toBeNull();
         expect(prices.querySelector(".price-note-controls__edit")?.textContent)
           .toContain("記錄個人原價");
+        const prompt = prices.querySelector(".price-note-controls__prompt")!;
+        expect([...prompt.children]).toEqual([
+          prices.querySelector(".product-list__unrecorded"),
+          prices.querySelector(".price-note-controls__edit"),
+        ]);
         expect(openInlinePriceEditor(row).value).toBe("");
         expect(row.querySelector(".product-list__prices .price-note-controls")?.tagName).toBe("DIV");
         expect(row.querySelector(".product-list__prices label")?.textContent)
-          .toContain("使用者自行輸入原價");
+          .toBe("使用者自行記錄價格（折扣前原價，非官方，NT$）");
+        expect(row.querySelector(".product-list__prices .field-hint")?.textContent)
+          .toBe("僅用來記錄自己確認的原價，非官方定價。例：39 或 39.50；限 0.01～99,999.99。");
         expect(row.querySelector(".product-list__labels")?.textContent).toContain("估算5折");
       }
       expect(favorite.querySelector(".product-panel__receipt-note")?.textContent)
-        .toContain("不保證現在或未來");
+        .toBe("推算折扣時逐件以 0.5 元進位。");
+      expect(favorite.querySelector(".product-panel__receipt-note")?.textContent)
+        .not.toContain("2026-10-02");
       expect(productRow(nearby, "treasure", "惜—食品甲")
         .querySelector(".product-list__receipt-price")).toBeNull();
       const noCode = [...favorite.querySelectorAll(".product-panel--treasure .product-list li")]
@@ -977,18 +1171,31 @@ describe("interactive store finder", () => {
       saveFixtureFavorite();
       act(() => render(<App client={productFixtureClient()} geolocation={null} />, root));
       await settleQueries();
-      act(() => favoriteCard("全家台鐵西店").querySelector<HTMLElement>("details > summary")!.click());
+      go("#favorites");
+      const card = favoriteCard("全家台鐵西店");
+      act(() => card.querySelector<HTMLElement>(".store-card__details > summary")!.click());
+      act(() => sourcePanel(card, "food").querySelector("summary")!.click());
 
-      const row = productRow(favoriteCard("全家台鐵西店"), "food", "友善便當");
+      const row = productRow(card, "food", "友善便當");
       const prices = row.querySelector<HTMLElement>(".product-list__prices")!;
       const editor = prices.querySelector<HTMLElement>(".price-note-controls--inline")!;
       const trigger = editor.querySelector<HTMLButtonElement>(".price-note-controls__edit")!;
       expect(prices.classList.contains("product-list__prices--receipt")).toBe(false);
       expect(editor.querySelector("form")).toBeNull();
       expect(trigger.textContent).toContain("記錄個人原價");
+      const prompt = editor.querySelector(".price-note-controls__prompt")!;
+      expect([...prompt.children]).toEqual([
+        editor.querySelector(".product-list__unrecorded"),
+        trigger,
+      ]);
 
       const input = openInlinePriceEditor(row);
       expect(input.value).toBe("");
+      expect(editor.querySelector("label")?.textContent)
+        .toBe("使用者自行記錄價格（折扣前原價，非官方，NT$）");
+      expect(editor.querySelector(".field-hint")?.textContent)
+        .toBe("僅用來記錄自己確認的原價，非官方定價。例：39 或 39.50；限 0.01～99,999.99。");
+      expect(input.getAttribute("aria-describedby")).toContain("price-hint-");
       act(() => editor.querySelector<HTMLButtonElement>(".price-note-controls__actions button[type='button']")!.click());
       expect(editor.querySelector("input")).toBeNull();
       expect(document.activeElement).toBe(editor.querySelector(".price-note-controls__edit"));
@@ -1011,6 +1218,10 @@ describe("interactive store finder", () => {
       expect(prices.querySelector(".product-list__price")?.textContent).toContain("NT$63.75");
       expect(editor.querySelector("input")).toBeNull();
       expect(editor.querySelector(".price-note-controls__edit")?.textContent).toContain("修改個人原價");
+      expect([...prompt.children]).toEqual([
+        editor.querySelector(".product-list__price"),
+        editor.querySelector(".price-note-controls__edit"),
+      ]);
       expect(document.activeElement).toBe(editor.querySelector(".price-note-controls__edit"));
       expect(JSON.parse(window.localStorage.getItem(PRICE_NOTES_KEY)!)).toEqual([
         { code: "0789123", name: "友善便當", priceCents: 6375 },
@@ -1018,6 +1229,9 @@ describe("interactive store finder", () => {
       const manager = root.querySelector<HTMLDetailsElement>("#price-notes .price-note-controls")!;
       expect(manager.classList.contains("price-note-controls--inline")).toBe(false);
       expect(manager.querySelector("summary")?.textContent).toContain("修改或清除個人原價");
+      expect(manager.querySelector("label")?.textContent).toBe("商品原價（折扣前，NT$）");
+      expect(manager.querySelector(".field-hint")?.textContent)
+        .toBe("僅用來記錄自己確認的原價，非官方定價。例：39 或 39.50；限 0.01～99,999.99。");
     });
 
     it("requires confirmation to clear a product note and returns focus to its inline input", async () => {
@@ -1334,7 +1548,9 @@ describe("interactive store finder", () => {
       submit("#area");
       await settleQueries();
       go("#favorites");
-      act(() => favoriteCard("全家台鐵西店").querySelector("summary")!.click());
+      const card = favoriteCard("全家台鐵西店");
+      act(() => card.querySelector("summary")!.click());
+      act(() => sourcePanel(card, "food").querySelector("summary")!.click());
 
       expect(loadImage).not.toHaveBeenCalled();
       expect(root.querySelector(".image-dialog img")).toBeNull();
@@ -1359,7 +1575,8 @@ describe("interactive store finder", () => {
       expect(document.activeElement).toBe(foodButton);
 
       go("#nearby");
-      expandNearby("全家台鐵西店");
+      const nearby = expandNearby("全家台鐵西店");
+      act(() => sourcePanel(nearby, "treasure").querySelector("summary")!.click());
       const nearbyButton = root.querySelector<HTMLButtonElement>(
         "#nearby .product-panel--treasure .product-list__image-button",
       )!;
@@ -1380,7 +1597,9 @@ describe("interactive store finder", () => {
       act(() => render(<App client={fixtureClient()} imageClient={{ loadImage }} geolocation={null} />, root));
       await settleQueries();
       go("#favorites");
-      act(() => favoriteCard("全家台鐵西店").querySelector("summary")!.click());
+      const card = favoriteCard("全家台鐵西店");
+      act(() => card.querySelector("summary")!.click());
+      act(() => sourcePanel(card, "treasure").querySelector("summary")!.click());
 
       const opener = root.querySelector<HTMLButtonElement>(
         "#favorites .product-panel--treasure .product-list__image-button",
