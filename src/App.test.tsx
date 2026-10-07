@@ -579,6 +579,60 @@ describe("interactive store finder", () => {
   });
 
   describe("independent product map disclosures", () => {
+    it("shows food time windows only inside its disclosure, without pricing individual food products", async () => {
+      saveFixtureFavorite();
+      window.localStorage.setItem(
+        PRICE_NOTES_KEY,
+        JSON.stringify([{ code: "0065108", name: "個人原價", priceCents: 5_000 }]),
+      );
+      act(() => render(<App client={sharedCodeClient()} geolocation={null} />, root));
+      go("#favorites");
+      await settleQueries();
+
+      const card = favoriteCard("全家台鐵西店");
+      act(() => card.querySelector<HTMLElement>(".store-card__details > summary")!.click());
+      const food = sourcePanel(card, "food");
+      const treasure = sourcePanel(card, "treasure");
+      expect(food.open).toBe(false);
+      expect(treasure.open).toBe(false);
+      expect(food.querySelector("summary")?.textContent).not.toMatch(/10:00|7 折|活動規則/);
+      expect(treasure.querySelector(".product-panel__rules")).toBeNull();
+
+      act(() => food.querySelector("summary")!.click());
+      const rules = food.querySelector<HTMLElement>(".product-panel__rules")!;
+      expect(food.open).toBe(true);
+      expect(treasure.open).toBe(false);
+      expect(rules.textContent).toContain("10:00–17:00");
+      expect(rules.textContent).toContain("當日 17:00 到期");
+      expect(rules.textContent).toContain("17:00–24:00");
+      expect(rules.textContent).toContain("當日 24:00 到期");
+      expect(rules.textContent?.match(/符合條件時享 7 折/g)).toHaveLength(2);
+      expect(rules.textContent).toContain("FamiSuper 生鮮蔬果可能於到期前 55 小時享 7 折");
+      expect(rules.textContent).toContain("現行官網活動頁未明載");
+      expect(rules.textContent).toContain("未提供逐件原價或效期");
+      expect(rules.textContent).toContain("無法判斷目前是否適用 7 折或計算實付金額");
+      expect(rules.querySelector<HTMLAnchorElement>("a[href='https://nevent.family.com.tw/cherishfood/']"))
+        .not.toBeNull();
+
+      const foodRow = productRow(card, "food", "友善便當");
+      expect(foodRow.querySelector(".product-list__price")?.textContent).toContain("NT$50");
+      expect(foodRow.querySelector(".product-list__labels")).toBeNull();
+      expect(foodRow.querySelector(".product-list__receipt-price")).toBeNull();
+      expect(foodRow.textContent).not.toMatch(/估算[357]折|折後|實付|該筆五折推算|7\s*折|NT\$35/);
+      expect(food.querySelector(".product-panel__discount-note")).toBeNull();
+      expect(food.querySelector(".product-panel__receipt-note")).toBeNull();
+
+      act(() => treasure.querySelector("summary")!.click());
+      expect(productRow(card, "treasure", "惜—食品甲").textContent)
+        .toContain("估算5折");
+      expect(productRow(card, "treasure", "惜—食品甲").textContent)
+        .toContain("該筆五折推算");
+      expect(treasure.querySelector(".product-panel__rules")).toBeNull();
+      act(() => food.querySelector("summary")!.click());
+      expect(food.open).toBe(false);
+      expect(treasure.open).toBe(true);
+    });
+
     it("keeps each favorite map closed until individually opened, without closing the store or the other map", async () => {
       saveFixtureFavorite();
       const client = productFixtureClient();
@@ -640,6 +694,10 @@ describe("interactive store finder", () => {
       expect(treasure.querySelector("summary")?.textContent).toContain("查詢中");
       act(() => food.querySelector("summary")!.click());
       act(() => treasure.querySelector("summary")!.click());
+      expect(food.querySelector(".product-panel__rules")?.textContent)
+        .toContain("符合條件時享 7 折");
+      expect(food.querySelector(".muted")?.textContent).toContain("正在查詢這張地圖");
+      expect(food.querySelector(".product-list")).toBeNull();
       await settleQueries();
       expect(sourcePanel(card, "food")).toBe(food);
       expect(sourcePanel(card, "treasure")).toBe(treasure);
@@ -727,7 +785,45 @@ describe("interactive store finder", () => {
       expect(treasure.querySelector(".muted")?.textContent)
         .toContain("此店的商品資料暫時無法確認");
       expect(food.open).toBe(false);
+      act(() => food.querySelector("summary")!.click());
+      expect(food.querySelector(".product-panel__rules")?.textContent)
+        .toContain("未回傳或查詢失敗也不能當作有貨或優惠");
+      expect(food.querySelector(".muted")?.textContent)
+        .toContain("未回傳此店商品資料，不代表缺貨");
+      expect(food.querySelector(".product-list")).toBeNull();
     });
+
+    it.each(["error", "empty"] as const)(
+      "does not treat a food map %s result as stocked or discounted products",
+      async (outcome) => {
+        saveFixtureFavorite();
+        const client: MapDataClient = {
+          load: vi.fn(async (): Promise<MapResult> => {
+            if (outcome === "error") throw new MapApiError("service", "友善食光讀取失敗");
+            return { stores: [makeStore({ info: [] })], fetchedAt: Date.now(), fromCache: false };
+          }),
+        };
+        act(() => render(<App client={client} geolocation={null} />, root));
+        await settleQueries();
+        const card = favoriteCard("全家台鐵西店");
+        act(() => card.querySelector<HTMLElement>(".store-card__details > summary")!.click());
+        const food = sourcePanel(card, "food");
+        expect(food.querySelector("summary")?.textContent).toContain(
+          outcome === "error" ? "讀取失敗：友善食光讀取失敗" : "0 項明細（尚無可列明細）",
+        );
+        expect(food.querySelector("summary")?.textContent).not.toMatch(/有貨|7\s*折/);
+        act(() => food.querySelector("summary")!.click());
+        expect(food.querySelector(".product-panel__rules")?.textContent)
+          .toContain("無法判斷目前是否適用 7 折");
+        expect(food.querySelector(".muted")?.textContent).toContain(
+          outcome === "error"
+            ? "此店的商品資料暫時無法確認"
+            : "未提供可列出的商品明細",
+        );
+        expect(food.querySelector(".product-list")).toBeNull();
+        expect(food.querySelector(".product-list__labels")).toBeNull();
+      },
+    );
 
     it("distinguishes a returned store with zero products from one the map did not return", async () => {
       saveFixtureFavorite();
@@ -753,6 +849,7 @@ describe("interactive store finder", () => {
       expect(treasure.querySelector(".muted")?.textContent)
         .toContain("地圖回傳此店，但未提供可列出的商品明細");
     });
+
   });
 
   describe("favorite treasure filters", () => {

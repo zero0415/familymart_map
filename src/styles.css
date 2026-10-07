@@ -1577,6 +1577,27 @@ button.favorite-button:hover {
   margin-top: 7px;
 }
 
+.product-panel__rules {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid #dbece0;
+  border-radius: 8px;
+  background: #fff;
+  color: #355e4e;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.product-panel__rules h4 {
+  margin: 0;
+  color: #176752;
+  font-size: 12px;
+}
+
+.product-panel__rules p {
+  margin: 6px 0 0;
+}
+
 .product-panel__discount-note {
   margin-top: 7px;
   color: #85511f;

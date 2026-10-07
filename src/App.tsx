@@ -535,6 +535,30 @@ function SourceDetails({
         </span>
       </summary>
       <div class="product-panel__content">
+        {source === "food" && (
+          <section class="product-panel__rules" aria-label="友善食光活動規則">
+            <h4>友善食光活動規則</h4>
+            <p>
+              10:00–17:00：當日 17:00 到期的鮮食，自 10:00 起至到期前，符合條件時享 7 折
+              （如飯糰、壽司、手卷）。
+            </p>
+            <p>
+              17:00–24:00：當日 24:00 到期的鮮食，自 17:00 起至到期前，符合條件時享 7 折
+              （如便當、麵食、三明治、沙拉、水果、麵包、冷藏甜點）。
+            </p>
+            <p>
+              部分 FamiSuper 生鮮蔬果可能於到期前 55 小時享 7 折
+              （<a href="https://ent.ltn.com.tw/news/paper/1456103" target="_blank" rel="noopener noreferrer">官網連結的過往報導</a>）；
+              現行官網活動頁未明載，請以最新公告及門市為準。
+            </p>
+            <p>
+              品項僅為舉例；官方地圖未提供逐件原價或效期，無法判斷目前是否適用 7 折或計算實付金額。
+              未回傳或查詢失敗也不能當作有貨或優惠；個人原價僅供紀錄。
+              請以商品條碼、門市結帳與
+              <a href="https://nevent.family.com.tw/cherishfood/" target="_blank" rel="noopener noreferrer">官方活動說明</a>為準。
+            </p>
+          </section>
+        )}
         {state.status === "loading" ? (
           <p class="muted">正在查詢這張地圖…</p>
         ) : state.status === "error" ? (
